@@ -2,3 +2,4 @@ legacy_outputs/*.joblib
 legacy_outputs/*.csv
 __pycache__/
 *.ipynb_checkpoints
+.DS_Store

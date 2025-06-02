@@ -12,6 +12,25 @@ logger = logging.getLogger(__name__)
 input_path = "legacy_outputs/features_selected.csv"
 local_model_path = "legacy_outputs/best_model.joblib"
 
+def train_model(df):
+    logger.info("🧪 Training model via train_model(df)...")
+
+    # Ensure input is numeric only (just like run_local_model)
+    df = df.select_dtypes(include=["number", "bool"])
+
+    X = df.drop("readmitted", axis=1)
+    y = df["readmitted"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = XGBClassifier(n_estimators=100, max_depth=4, learning_rate=0.1,
+                          use_label_encoder=False, eval_metric='logloss')
+    model.fit(X_train, y_train)
+
+    logger.info("✅ Training complete. Returning model object.")
+    return model
+
+
 def run_local_model():
     logger.info("🧪 Running local XGBoost model for testing...")
 
