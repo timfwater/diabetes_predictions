@@ -1,4 +1,3 @@
-
 import sagemaker
 from sagemaker import get_execution_role
 from sagemaker.inputs import TrainingInput
@@ -19,13 +18,10 @@ def main():
 
     role = get_execution_role()
     session = sagemaker.Session()
-    region = session.boto_region_name
-
-    xgb_image_uri = sagemaker.image_uris.retrieve("xgboost", region, version="1.5-1")
 
     estimator = XGBoost(
-        entry_point=None,
-        image_uri=xgb_image_uri,
+        entry_point="train.py",  # this can be any existing script — it won't be used
+        framework_version="1.5-1",
         role=role,
         instance_count=1,
         instance_type="ml.m5.large",
@@ -51,7 +47,7 @@ def main():
         estimator=estimator,
         objective_metric_name=objective_metric_name,
         hyperparameter_ranges=hyperparameter_ranges,
-        metric_definitions=[{'Name': 'validation:auc', 'Regex': 'auc:([0-9\.]+)'}],
+        metric_definitions=[{'Name': 'validation:auc', 'Regex': 'auc:([0-9\\.]+)'}],
         max_jobs=10,
         max_parallel_jobs=2,
         objective_type='Maximize'

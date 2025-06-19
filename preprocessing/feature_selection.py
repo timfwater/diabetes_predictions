@@ -1,45 +1,57 @@
-"""
-This script implements the cleaned logic from `notebooks/feature_selection.ipynb`.
-For full exploratory justification and visualizations, refer to that notebook.
-"""
+# xgb_feature_selection.py
 
 import pandas as pd
-import logging
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+import boto3
+import io
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# S3 paths
+bucket = "diabetes-directory"
+input_key = "02_engineered/prepared_diabetes_full.csv"
+output_key = "02_engineered/selected_features.csv"
 
-def select_features(df):
-    logger.info(f"📊 Starting feature selection on shape: {df.shape}")
+# S3 client
+s3 = boto3.client("s3")
 
-    # Drop columns with >50% missing values
-    missing = df.isnull().mean()
-    df = df.drop(columns=missing[missing > 0.5].index)
-    logger.info(f"✅ Dropped high-missing columns. New shape: {df.shape}")
+# Read input CSV from S3
+obj = s3.get_object(Bucket=bucket, Key=input_key)
+df = pd.read_csv(io.BytesIO(obj["Body"].read()))
 
-    # Drop columns with zero variance
-    nunique = df.nunique()
-    df = df.drop(columns=nunique[nunique == 1].index)
-    logger.info(f"✅ Dropped zero-variance columns. New shape: {df.shape}")
+# Drop rows with missing target or too many NaNs
+df = df.dropna(subset=["readmitted"])
+df = df.dropna(axis=1, thresh=int(len(df) * 0.8))  # Drop cols with >20% missing
 
-    # (Optional) Drop any highly correlated features (placeholders for now)
-    # corr = df.corr().abs()
-    # upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-    # to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
-    # df = df.drop(columns=to_drop)
-    # logger.info(f"✅ Dropped highly correlated features: {to_drop}")
+# Encode target
+label_encoder = LabelEncoder()
+y = label_encoder.fit_transform(df["readmitted"])
 
-    return df
+# Drop target from features
+X = df.drop(columns=["readmitted"])
 
-def main():
-    input_path = "legacy_outputs/processed_output.csv"
-    output_path = "legacy_outputs/features_selected.csv"
+# Handle categorical features
+X = pd.get_dummies(X, drop_first=True)
 
-    df = pd.read_csv(input_path)
-    df = select_features(df)
-    df.to_csv(output_path, index=False)
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    logger.info(f"✅ Feature selection complete. Output saved to {output_path}")
+# Fit XGBoost model
+model = xgb.XGBClassifier(
+    objective="binary:logistic",
+    eval_metric="logloss",
+    random_state=42
+)
+model.fit(X_train, y_train)
 
-if __name__ == "__main__":
-    main()
+# Get top N features
+TOP_N = 50
+importances = pd.Series(model.feature_importances_, index=X.columns)
+top_features = importances.sort_values(ascending=False).head(TOP_N)
+
+# Save result to S3
+csv_buffer = io.StringIO()
+top_features.index.to_series().to_csv(csv_buffer, index=False, header=False)
+s3.put_object(Bucket=bucket, Key=output_key, Body=csv_buffer.getvalue())
+
+print(f"✅ Top {TOP_N} features saved to s3://{bucket}/{output_key}")
