@@ -1,4 +1,9 @@
-pandas==1.3.5
-scikit-learn==0.23.2
-xgboost==1.4.2
-joblib
+boto3
+fsspec
+s3fs
+sagemaker
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.1.3
+xgboost==1.6.2
+joblib==1.2.0

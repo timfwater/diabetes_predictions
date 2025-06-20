@@ -1,25 +1,31 @@
 import os, io, boto3
 import pandas as pd
-from sagemaker import Session, image_uris, estimator
+from sagemaker import Session, get_execution_role, image_uris, estimator
 from sagemaker.tuner import HyperparameterTuner, ContinuousParameter, IntegerParameter
 from sagemaker.inputs import TrainingInput
 import sagemaker.amazon.common as smac
 from sklearn.model_selection import KFold
 
-# Config
+# 🔧 Config
 sess = Session()
-role = sess.get_caller_identity_arn()  # Adjust or replace with get_execution_role()
-bucket = "diabetes-directory"
-prefix = "02_engineered"; proto_prefix = f"{prefix}/k"
-xgb_output = f"s3://{bucket}/{prefix}/xgb_output"
+role = get_execution_role()
 
-# Load & filter
-df = pd.read_csv(f"s3://{bucket}/{prefix}/5_perc.csv")
-features = pd.read_csv(f"s3://{bucket}/{prefix}/selected_features.csv")["selected_features"].tolist()
+# 🌐 Read from environment variables (with sensible defaults)
+bucket = os.environ.get("BUCKET", "diabetes-directory")
+prefix = os.environ.get("PREFIX", "02_engineered")
+features_file = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
+input_file = os.environ.get("FILTERED_INPUT_FILE", "5_perc.csv")
+xgb_output_prefix = os.environ.get("XGB_OUTPUT_PREFIX", "xgb_output")
+proto_prefix = f"{prefix}/k"
+xgb_output = f"s3://{bucket}/{prefix}/{xgb_output_prefix}"
+
+# 📥 Load and filter data
+df = pd.read_csv(f"s3://{bucket}/{prefix}/{input_file}")
+features = pd.read_csv(f"s3://{bucket}/{prefix}/{features_file}")["selected_features"].tolist()
 df = df[features + ["readmitted"]].dropna()
-print(f"Filtered to {df.shape[0]} rows and {len(features)} features.")
+print(f"📊 Filtered to {df.shape[0]} rows and {len(features)} features.")
 
-# Export folds to protobuf
+# 📤 Export folds to protobuf
 def export_protobuf(df_part, key):
     buf = io.BytesIO()
     X = df_part.drop("readmitted", axis=1).astype("float32").values
@@ -35,7 +41,7 @@ for k, (tr, va) in enumerate(KFold(n_splits=5, shuffle=True, random_state=42).sp
     val_s3 = export_protobuf(df.iloc[va], f"{proto_prefix}/val_{k}.data")
     folds.append((train_s3, val_s3))
 
-# Estimator and tuner
+# ⚙️ Estimator and tuner setup
 container = image_uris.retrieve("xgboost", sess.boto_region_name, "1.7-1")
 xgb_est = estimator.Estimator(
     image_uri=container,
@@ -59,19 +65,20 @@ tuner = HyperparameterTuner(
     objective_metric_name="validation:auc",
     hyperparameter_ranges=hp_ranges,
     metric_definitions=[{"Name": "validation:auc", "Regex": "validation-auc=([0-9\\.]+)"}],
-    max_jobs=20,
+    max_jobs=4,
     max_parallel_jobs=5,
     objective_type="Maximize",
 )
 
-# Fit
+# 🚀 Launch tuning
 for train_s3, val_s3 in folds:
-    tuner.fit({"train": TrainingInput(train_s3, content_type="application/x-recordio-protobuf"),
-               "validation": TrainingInput(val_s3, content_type="application/x-recordio-protobuf")})
+    tuner.fit({
+        "train": TrainingInput(train_s3, content_type="application/x-recordio-protobuf"),
+        "validation": TrainingInput(val_s3, content_type="application/x-recordio-protobuf")
+    })
 
-print("✅ Tuning complete.")
-
-# Save tuning job name
+# 📝 Save latest tuning job name
+job_name = tuner.latest_tuning_job.name
 with open("latest_tuning_job.txt", "w") as f:
-    f.write(tuner.latest_tuning_job.name)
-print("Saved tuning job:", tuner.latest_tuning_job.name)
+    f.write(job_name)
+print("✅ Saved tuning job:", job_name)

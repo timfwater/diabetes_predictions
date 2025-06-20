@@ -1,11 +1,16 @@
+import os
 import pandas as pd
 from sklearn.utils import shuffle
 import boto3
 from io import StringIO
 
-# AWS setup
-bucket = "diabetes-directory"
-prefix = "02_engineered"
+# --- Load Environment Variables or Use Defaults ---
+bucket = os.environ.get("BUCKET", "diabetes-directory")
+prefix = os.environ.get("PREFIX", "02_engineered")
+raw_subfolder = os.environ.get("RAW_PREFIX", "01_raw")
+input_file = os.environ.get("INPUT_FILE", "Diabetes_Input.csv")
+
+# --- Output file names ---
 output_files = {
     "full":  "prepared_diabetes_full.csv",
     "train": "prepared_diabetes_train.csv",
@@ -15,7 +20,7 @@ output_files = {
 s3_client = boto3.client("s3")
 
 def CSV_Reader():
-    return pd.read_csv(f"s3://{bucket}/01_raw/Diabetes_Input.csv", low_memory=False)
+    return pd.read_csv(f"s3://{bucket}/{raw_subfolder}/{input_file}", low_memory=False)
 
 def upload_df_to_s3(df: pd.DataFrame, key: str):
     csv_buffer = StringIO()
@@ -31,7 +36,7 @@ def upload_df_to_s3(df: pd.DataFrame, key: str):
     else:
         print(f"❗Failed uploading `{key}`, status code {status}")
 
-# Load and process data
+# --- Load and preprocess ---
 diabetes = CSV_Reader()
 
 # Drop and reorganize columns
