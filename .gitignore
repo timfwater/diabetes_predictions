@@ -1,5 +1,23 @@
-legacy_outputs/*.joblib
-legacy_outputs/*.csv
+# Byte-compiled / cache files
 __pycache__/
-*.ipynb_checkpoints
+*.py[cod]
+*.swp
+
+# VSCode or PyCharm IDE metadata
+.vscode/
+.idea/
+
+# OS-generated files
 .DS_Store
+Thumbs.db
+
+# AWS/ECS intermediate files
+fargate_deployment/final-task-def.json
+preprocessing/latest_tuning_job.txt
+
+# Environment config (optional if you store secrets here)
+fargate_deployment/config.env
+
+# Logs or outputs (if added later)
+*.log
+*.out

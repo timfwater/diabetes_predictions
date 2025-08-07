@@ -1,6 +1,6 @@
 import os, io, boto3
 import pandas as pd
-from sagemaker import Session, get_execution_role, image_uris, estimator
+from sagemaker import Session, image_uris, estimator
 from sagemaker.tuner import HyperparameterTuner, ContinuousParameter, IntegerParameter
 from sagemaker.inputs import TrainingInput
 import sagemaker.amazon.common as smac
@@ -8,7 +8,11 @@ from sklearn.model_selection import KFold
 
 # 🔧 Config
 sess = Session()
-role = get_execution_role()
+role = os.environ.get("SAGEMAKER_TRAINING_ROLE")
+
+print(f"✅ Detected SAGEMAKER_TRAINING_ROLE: {role}")
+if not role:
+    raise ValueError("❌ SAGEMAKER_TRAINING_ROLE environment variable is missing in container.")
 
 # 🌐 Read from environment variables (with sensible defaults)
 bucket = os.environ.get("BUCKET", "diabetes-directory")

@@ -1,0 +1,24 @@
+{
+  "family": "REPLACE_TASK_FAMILY",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "REPLACE_EXEC_ROLE",
+  "taskRoleArn": "REPLACE_TASK_ROLE",
+  "containerDefinitions": [
+    {
+      "name": "diabetes",
+      "image": "REPLACE_IMAGE_URI",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "REPLACE_LOG_GROUP",
+          "awslogs-region": "REPLACE_AWS_REGION",
+          "awslogs-stream-prefix": "REPLACE_LOG_STREAM_PREFIX"
+        }
+      }
+    }
+  ]
+}
