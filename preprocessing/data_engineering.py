@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.utils import shuffle
 import boto3
 from io import StringIO
+import numpy as np
 
 # --- Load Environment Variables or Use Defaults ---
 bucket = os.environ.get("BUCKET", "diabetes-directory")
@@ -78,10 +79,24 @@ for med in ["medication_metformin", "medication_glipizide", "medication_glyburid
 diabetes['change'] = diabetes['change'].replace(['No', 'Ch'], [0, 1])
 diabetes['any_medication'] = diabetes['any_medication'].replace(['Yes', 'No'], [1, 0])
 
-# Map diagnosis codes
+# --- Diagnosis code normalization ---
+def _as_int_or_nan(x):
+    v = pd.to_numeric(x, errors='coerce')
+    if pd.notna(v):
+        try:
+            return int(v)
+        except Exception:
+            return np.nan
+    return np.nan
+
 def Convert_Disease_Codes(min_code, max_code, newname):
     for col in ['diag_1', 'diag_2', 'diag_3']:
-        diabetes[col] = diabetes[col].apply(lambda x: newname if pd.to_numeric(x, errors='coerce') in range(min_code, max_code) else x)
+        def _map(v):
+            iv = _as_int_or_nan(v)
+            if pd.notna(iv) and (min_code <= iv < max_code):
+                return newname
+            return v
+        diabetes[col] = diabetes[col].apply(_map)
 
 disease_ranges = [
     (340, 459, 'circulatory'), (785, 786, 'circulatory'), (745, 748, 'circulatory'), (459, 460, 'circulatory'),
@@ -103,9 +118,11 @@ for r in disease_ranges:
 for col in ['diag_1', 'diag_2', 'diag_3']:
     diabetes[col] = diabetes[col].replace(r'^[VE]\d+', 'injury', regex=True)
 
-# Replace remaining numeric diagnosis with 'Nothing'
+# Replace remaining numeric diagnosis with 'Nothing' (FIX: only when numeric)
 for col in ['diag_1', 'diag_2', 'diag_3']:
-    diabetes[col] = diabetes[col].apply(lambda x: 'Nothing' if pd.to_numeric(x, errors='coerce') is not None else x)
+    diabetes[col] = diabetes[col].apply(
+        lambda x: 'Nothing' if pd.notna(pd.to_numeric(x, errors='coerce')) else x
+    )
 
 # Recode and clean other columns
 diabetes['age'] = diabetes['age'].replace({'[0-10)':1, '[10-20)':2, '[20-30)':3, '[30-40)':4, '[40-50)':5, 
@@ -131,8 +148,8 @@ def Create_Combined_Diagnosis_Dummies(df, cols):
     unique_vals = all_vals.unique()
     dummies = pd.DataFrame(0, index=df.index, columns=[f"diagnosis_{val}" for val in unique_vals])
     for val in unique_vals:
-        for c in cols:
-            dummies[f"diagnosis_{val}"] |= (df[c] == val).astype(int)
+        mask = (df[cols[0]] == val) | (df[cols[1]] == val) | (df[cols[2]] == val)
+        dummies[f"diagnosis_{val}"] = mask.astype(int)
     return dummies
 
 diagnosis_dummies = Create_Combined_Diagnosis_Dummies(diabetes, ['diag_1', 'diag_2', 'diag_3'])
@@ -154,7 +171,6 @@ diabetes = Replace_With_Dummies(diabetes, dummy_vars)
 # Ensure all values are int
 for col in diabetes.columns:
     diabetes[col] = diabetes[col].astype(int)
-
 
 # Shuffle and split
 diabetes = shuffle(diabetes, random_state=42).reset_index(drop=True)

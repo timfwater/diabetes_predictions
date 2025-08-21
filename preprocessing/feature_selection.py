@@ -1,56 +1,71 @@
+# preprocessing/feature_selection.py
 import os
+import io
+import boto3
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import boto3
-import io
 
-# --- Load Environment Variables or Use Defaults ---
-bucket = os.environ.get("BUCKET", "diabetes-directory")
-prefix = os.environ.get("PREFIX", "02_engineered")
-input_filename = os.environ.get("FULL_DATA_FILE", "prepared_diabetes_full.csv")
-output_filename = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
+# -------- Config (aligned with run_tuning) --------
+BUCKET = os.environ.get("BUCKET", "diabetes-directory")
+PREFIX = os.environ.get("PREFIX", "02_engineered")
+# Use the SAME engineered input as training/tuning
+INPUT_FILE = os.environ.get("FILTERED_INPUT_FILE", "5_perc.csv")
+LABEL_COL = os.environ.get("LABEL_COL", "readmitted")
 
-input_key = f"{prefix}/{input_filename}"
-output_key = f"{prefix}/{output_filename}"
+# Where to save list for run_tuning to consume
+OUTPUT_FILENAME = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
+INPUT_KEY = f"{PREFIX}/{INPUT_FILE}"
+OUTPUT_KEY = f"{PREFIX}/{OUTPUT_FILENAME}"
 
-# --- S3 client ---
+TOP_N = int(os.environ.get("TOP_N", "50"))
+
 s3 = boto3.client("s3")
 
-# --- Read input CSV from S3 ---
-obj = s3.get_object(Bucket=bucket, Key=input_key)
+# -------- Load engineered data (no ad-hoc encoding here) --------
+obj = s3.get_object(Bucket=BUCKET, Key=INPUT_KEY)
 df = pd.read_csv(io.BytesIO(obj["Body"].read()))
 
-# --- Preprocessing ---
-df = df.dropna(subset=["readmitted"])
-df = df.dropna(axis=1, thresh=int(len(df) * 0.8))  # Drop cols with >20% missing
+if LABEL_COL not in df.columns:
+    raise ValueError(f"Label column '{LABEL_COL}' not found in {INPUT_KEY}")
 
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(df["readmitted"])
-X = pd.get_dummies(df.drop(columns=["readmitted"]), drop_first=True)
+# Keep numeric features only (assume upstream engineering handled encoding)
+X = df.drop(columns=[LABEL_COL])
+num_cols = X.select_dtypes(include=["number", "bool"]).columns.tolist()
+if not num_cols:
+    raise ValueError("No numeric features found. Ensure upstream step encoded categoricals.")
+X = X[num_cols].copy().astype("float32")
+y_raw = df[LABEL_COL]
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# Normalize label to {0,1}
+y = pd.to_numeric(y_raw.replace(
+    {"NO":0,"No":0,"no":0,"0":0,"FALSE":0,"False":0,"false":0,
+     "YES":1,"Yes":1,"yes":1,"1":1,"TRUE":1,"True":1,"true":1,
+     "<30":1, ">30":1}
+), errors="coerce").astype("float32")
+if not set(pd.unique(y.dropna())).issubset({0.0, 1.0}):
+    raise ValueError(f"Label contains values outside {{0,1}}: {pd.unique(y)}")
 
-# --- Train XGBoost ---
+# Drop rows with missing label; fill feature NaNs
+mask = y.notna()
+X = X[mask].fillna(0.0)
+y = y[mask].astype("int8")
+
+# -------- Train quick XGB for importances --------
 model = xgb.XGBClassifier(
     objective="binary:logistic",
     eval_metric="logloss",
-    random_state=42
+    random_state=42,
+    n_estimators=200
 )
-model.fit(X_train, y_train)
+model.fit(X, y)
 
-# --- Select top N features ---
-TOP_N = 50
 importances = pd.Series(model.feature_importances_, index=X.columns)
-top_features = importances.sort_values(ascending=False).head(TOP_N)
+top_features = importances.sort_values(ascending=False).head(TOP_N).index.tolist()
 
-# ✅ Format with header for downstream compatibility
-top_features_df = pd.DataFrame({"selected_features": top_features.index})
+# -------- Save as CSV with header 'selected_features' --------
+csv = "selected_features\n" + "\n".join(top_features) + "\n"
+s3.put_object(Bucket=BUCKET, Key=OUTPUT_KEY, Body=csv.encode("utf-8"))
 
-# --- Upload to S3 ---
-csv_buffer = io.StringIO()
-top_features_df.to_csv(csv_buffer, index=False)  # Includes 'selected_features' header
-s3.put_object(Bucket=bucket, Key=output_key, Body=csv_buffer.getvalue())
-
-print(f"✅ Top {TOP_N} features saved to s3://{bucket}/{output_key}")
+print(f"✅ Top {TOP_N} features saved to s3://{BUCKET}/{OUTPUT_KEY}")
+print(f"ℹ️ First 5: {top_features[:5]}")
+print(f"ℹ️ Using engineered file: s3://{BUCKET}/{INPUT_KEY}")
