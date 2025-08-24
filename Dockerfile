@@ -1,28 +1,34 @@
+# syntax=docker/dockerfile:1.7
+
 # ---- Base image ----
 FROM python:3.10-slim
 
-# ---- Environment setup ----
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# ---- Environment ----
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8
 
-# ---- System dependencies ----
-RUN apt-get update && apt-get install -y \
-    build-essential curl git \
+# ---- System deps ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git \
   && rm -rf /var/lib/apt/lists/*
 
-# ---- Create working directory ----
+# ---- Workdir ----
 WORKDIR /app
 
-# ---- Install Python dependencies ----
+# ---- Python deps ----
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Use BuildKit cache to avoid re-downloading wheels each build
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# ---- Copy project files ----
+# ---- App code ----
 COPY preprocessing/ /app/preprocessing/
 COPY run_pipeline.py /app/run_pipeline.py
-# If your latest_tuning_job.txt lives under preprocessing/, also drop a copy at /app
-# so the default TUNING_JOB_FILE works without extra envs:
-RUN if [ -f /app/preprocessing/latest_tuning_job.txt ]; then cp /app/preprocessing/latest_tuning_job.txt /app/latest_tuning_job.txt; fi
 
-# ---- Default command (full pipeline) ----
+# Optional: placeholder so deploy scripts can read it before tuning writes it
+RUN touch /app/latest_tuning_job.txt
+
+# ---- Default command ----
 CMD ["python", "run_pipeline.py"]
