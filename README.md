@@ -1,126 +1,157 @@
-# 🧠 Diabetes Readmission Prediction Pipeline
+# Diabetes Readmissions — Cost-Optimized ML Pipeline (AWS)
 
-This project implements a fully automated, end-to-end machine learning pipeline for predicting diabetes-related hospital readmissions. It leverages:
+**Goal:** Predict 30-day readmissions for diabetic patients and choose an operating threshold that **maximizes cost savings** (not just ROC AUC).
 
-- **AWS Fargate** for serverless execution  
-- **SageMaker** for model training, tuning, and deployment  
-- **Docker** for environment consistency  
-- **GitHub** for reproducible version control
+**Stack (end-to-end):** S3 • PySpark/Pandas (EDA + prep) • Feature Selection • XGBoost (SageMaker HPO) • Best-model deploy (optional) • Batch predictions → S3 • Evaluation & business metrics • ECS/Fargate (optional orchestrator)
 
 ---
 
-## 📁 Directory Structure
+## 🔎 What this project shows
+- Practical ML framing for an **imbalanced** clinical outcome.
+- **Feature selection** + **hyperparameter tuning** for XGBoost via SageMaker.
+- Evaluation beyond AUC: **net cost savings**, **prevented readmissions**, and confusion-matrix metrics.
+- Production-style execution via **ECS/Fargate** (optional), or fully local.
 
-```
+---
+
+## 🗺️ Architecture (high-level)
+
+**Raw CSV → Preprocess/Feature Select → SageMaker HPO (XGB) → Best Model → (Optional) Endpoint → Batch Predict → Evaluate (AUC & Cost) → Report**
+
+
+---
+
+## 📂 Repository layout
+
 .
-├── Dockerfile                         # Image used for Fargate task
-├── requirements.txt                  # Python dependencies
-├── run_pipeline.py                   # Master controller script for full pipeline
-├── run_fargate_task.sh               # CLI launcher for the pipeline via Fargate
-├── fargate_deployment/               # Deployment, IAM, and ECS configuration
-├── preprocessing/                    # Modular scripts for each pipeline stage
-├── Dev/                              # Local-only folder for notebooks, exploration
-```
+├── Dev/notebooks/
+│ ├── data_engineering_eda.ipynb # EDA + cleaning notes
+│ ├── feature_selection_eda.ipynb # FS rationale & checks
+│ ├── model_tuning.ipynb # HPO results exploration
+│ └── evaluation_visualization.ipynb # confusion matrix, tables, plots
+├── preprocessing/
+│ ├── data_engineering.py # clean/encode/splits
+│ ├── feature_selection.py # select informative features
+│ ├── run_tuning.py # SageMaker HPO (XGBoost)
+│ ├── deploy_best_xgb.py # (optional) deploy best model
+│ ├── predict_from_endpoint.py # (optional) real-time predict
+│ └── latest_tuning_job.txt # HPO job id cache
+├── run_pipeline.py # single entrypoint (CLI)
+├── fargate_deployment/ # optional containerized orchestration
+│ ├── build_and_push.sh
+│ ├── deploy_to_fargate.sh
+│ ├── task-def-template.json
+│ └── ...
+├── requirements.txt
+└── Dockerfile
+
+
 
 ---
 
-## ⚙️ Pipeline Overview
+## ▶️ How to run
 
-The pipeline consists of the following steps:
+### Option A — Local (recommended for reviewers)
 
-1. **Data Engineering**  
-   `data_engineering.py`  
-   Cleans and transforms raw data; splits into train/test sets.
-
-2. **Feature Selection**  
-   `feature_selection.py`  
-   Identifies the top N most predictive features using model-driven ranking.
-
-3. **Hyperparameter Tuning**  
-   `run_tuning.py`  
-   Launches a SageMaker XGBoost tuning job to find optimal model parameters.
-
-4. **Model Deployment**  
-   `deploy_best_xgb.py`  
-   Deploys the best model to a SageMaker endpoint.
-
-5. **Batch Prediction**  
-   `predict_from_endpoint.py`  
-   Uses the deployed model to generate predictions for both train/test datasets.
-
----
-
-## 🚀 Deployment Steps
-
-### 1. Set up AWS resources (ECR, IAM, ECS, SageMaker)
 ```bash
-cd fargate_deployment
-./setup_iam.sh
-```
+# 1) Create a virtual env and install deps
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 
-### 2. Build ECS task definition from template
-```bash
-python fargate_deployment/generate_task_def.py
-```
+# 2) Preprocess + feature select
+python preprocessing/data_engineering.py
+python preprocessing/feature_selection.py
 
-### 3. Register task definition and push Docker image to ECR
-```bash
-./deploy_to_fargate.sh
-```
+# 3) Hyperparameter tune XGBoost on SageMaker
+python preprocessing/run_tuning.py
 
-### 4. Launch full pipeline on Fargate
-```bash
+# 4) (Optional) Deploy best model for real-time inference
+python preprocessing/deploy_best_xgb.py
+
+# 5) Generate predictions & evaluate
+# - batch predict in your evaluation notebook OR via your own script
+# - open Dev/notebooks/evaluation_visualization.ipynb to render tables/plots
+
+
+Option B — ECS/Fargate (one-command orchestration)
+
+# Build & push image, update task def
+./fargate_deployment/build_and_push.sh
+./fargate_deployment/deploy_to_fargate.sh
+
+# Launch one task run of the pipeline
 ./run_fargate_task.sh
-```
 
----
 
-## 📦 Dev Folder
+Fargate simply wraps the same Python entrypoints in a containerized run.
 
-The `Dev/` folder contains Jupyter notebooks used during development and experimentation:
+🧪 Metrics you’ll see
 
-- `data_engineering_eda.ipynb`
-- `feature_selection_eda.ipynb`
-- `model_tuning.ipynb`
-- `evaluation_visualization.ipynb`
+ROC AUC (holdout)
 
-These are not required for running the pipeline but may be useful for further customization or inspection.
+Confusion matrix at the chosen threshold
 
----
+Operational KPIs:
 
-## ✅ Outputs
+Net_Cost_Savings (program cost vs. prevented readmissions value)
 
-All intermediate and final outputs are saved to your configured S3 bucket, including:
+Prevented_Readmissions
 
-- Cleaned datasets
-- Feature lists
-- Trained model artifacts
-- Predictions:
-  - `train_with_predictions.csv`
-  - `test_with_predictions.csv`
+Recall / Precision / F1 / Specificity / Accuracy
 
----
+Feature importances (model + FS stage)
 
-## 🔐 IAM and Security
+Example (test set, cost-optimized threshold):
 
-Roles and policies are configured automatically via `setup_iam.sh`, including:
+Cutoff: ~8%
 
-- ECS task execution and runtime roles
-- SageMaker trust and access
-- Inline S3 access policies
+ROC_AUC: ~0.59–0.63
 
----
+Net_Cost_Savings: ~$300–$370 per patient
 
-## 🛠️ Requirements
+Prevented_Readmissions: 500–700
 
-- AWS account with permissions for Fargate, SageMaker, ECS, IAM, and ECR  
-- Docker installed locally  
-- Python 3.10+  
-- AWS CLI configured (`aws configure`)  
+🧰 Configuration
 
----
+Set AWS region/bucket once (env or .env):
 
-## 📬 Questions or Contributions
+AWS_REGION=us-east-1
+S3_BUCKET=your-bucket
+S3_PREFIX=diabetes-ml/
 
-This project was developed by **Timothy Waterman** as part of ongoing work in healthcare analytics and ML system deployment.  
-PRs and suggestions welcome.
+
+SageMaker permissions: the role running tuning needs sagemaker:* for training jobs and s3:{Get,Put,List} on your prefixes.
+
+📈 Reproducing the visuals
+
+Open Dev/notebooks/evaluation_visualization.ipynb to render:
+
+Confusion matrix for the final threshold
+
+Model comparison table (AUC vs. cost)
+
+Feature importances
+
+Prediction score distributions
+
+Screenshots from this notebook are included in the presentation.
+
+🔒 Notes on data, ethics, and limits
+
+Dataset: UCI Diabetes (tabular, imbalanced ~11% positives).
+
+No PHI; academic dataset.
+
+We report business outcomes (cost) alongside AUC.
+
+Model bias can be assessed by stratifying metrics across subgroups (future work).
+
+🚧 Roadmap (nice-to-have)
+
+Add a simple neural network baseline (MLP) to benchmark vs. XGBoost.
+
+SHAP-based explanations for per-patient predictions.
+
+Fairness slice metrics.
+
+Batch inference job for full test set via SageMaker Processing.

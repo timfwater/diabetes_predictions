@@ -1,0 +1,38 @@
+{
+  "predictions": "s3://diabetes-directory/03_scored/prepared_diabetes_test_with_predictions.csv",
+  "label_col": "readmitted",
+  "xgb_col": "xgb_prob",
+  "nn_col": "nn_prob",
+  "thresholds": [
+    0.2,
+    0.3,
+    0.5
+  ],
+  "confusion_thr": 0.5,
+  "summary": [
+    {
+      "model": "xgb",
+      "roc_auc": 0.6233138886530838,
+      "pr_auc": 0.18263452825629695,
+      "brier": 0.09925209588360066
+    },
+    {
+      "model": "nn",
+      "roc_auc": 0.5829362432061855,
+      "pr_auc": 0.16681119290780833,
+      "brier": 0.3440777690665358
+    },
+    {
+      "model": "ensemble_avg",
+      "roc_auc": 0.6085690727096257,
+      "pr_auc": 0.17897584139931164,
+      "brier": 0.16110310037836909
+    }
+  ],
+  "s3_outputs": {
+    "summary_csv": "s3://diabetes-directory/04_eval/tables/summary_20250905-131940.csv",
+    "point_metrics_csv": "s3://diabetes-directory/04_eval/tables/point_metrics_20250905-131940.csv",
+    "html_report": "s3://diabetes-directory/04_eval/report_20250905-131940.html",
+    "figs_prefix": "s3://diabetes-directory/04_eval/figs/"
+  }
+}

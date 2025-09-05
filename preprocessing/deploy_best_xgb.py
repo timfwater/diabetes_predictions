@@ -4,7 +4,7 @@ import time
 import boto3
 import sagemaker
 from sagemaker.tuner import HyperparameterTuner
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, BotoCoreError
 
 # ------------ Config ------------
 REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -57,48 +57,64 @@ def _job_status(name: str) -> str:
     except ClientError:
         return "Unknown"
 
+def _valid_xgb_name(name: str) -> bool:
+    return bool(name) and name.startswith(TUNING_JOB_PREFIX)
+
 def _pick_tuning_job() -> str:
     """
     Priority:
-      1) TUNING_JOB_NAME (env). If not complete and WAIT_FOR_TUNING=true, wait.
-      2) TUNING_JOB_FILE (if exists). If not complete and WAIT_FOR_TUNING=true, wait.
+      1) TUNING_JOB_NAME (env) — only if it matches XGB prefix; may wait if requested.
+      2) TUNING_JOB_FILE (if exists) — only if it matches XGB prefix; may wait if requested.
       3) Latest Completed job matching TUNING_JOB_PREFIX.
     """
+    # 1) Env override
     if TUNING_JOB_NAME:
-        print("📦 Loaded tuning job (env):", TUNING_JOB_NAME)
-        status = _job_status(TUNING_JOB_NAME)
-        print("   status:", status)
-        if status not in ("Completed", "Stopped"):
-            if WAIT_FOR_TUNING:
-                print("⏳ Waiting for tuning job to complete...")
-                sm.get_waiter("hyper_parameter_tuning_job_completed_or_stopped").wait(
-                    HyperParameterTuningJobName=TUNING_JOB_NAME
-                )
-            else:
-                raise RuntimeError(
-                    f"Tuning job {TUNING_JOB_NAME} not completed (status={status}). "
-                    f"Set WAIT_FOR_TUNING=true or pass a Completed job."
-                )
-        return TUNING_JOB_NAME
-
-    if os.path.exists(TUNING_JOB_FILE):
-        with open(TUNING_JOB_FILE) as f:
-            name = f.read().strip()
-        if name:
-            print("📦 Loaded tuning job (file):", name)
-            status = _job_status(name)
+        if not _valid_xgb_name(TUNING_JOB_NAME):
+            print(f"⚠️  TUNING_JOB_NAME='{TUNING_JOB_NAME}' does not match expected XGB prefix "
+                  f"'{TUNING_JOB_PREFIX}'. Ignoring env override.")
+        else:
+            print("📦 Loaded tuning job (env):", TUNING_JOB_NAME)
+            status = _job_status(TUNING_JOB_NAME)
             print("   status:", status)
-            if status in ("Completed", "Stopped"):
-                return name
-            if WAIT_FOR_TUNING:
-                print("⏳ Waiting for tuning job to complete...")
-                sm.get_waiter("hyper_parameter_tuning_job_completed_or_stopped").wait(
-                    HyperParameterTuningJobName=name
-                )
-                return name
-            print("ℹ️ File’s tuning job not completed; selecting latest Completed instead.")
+            if status not in ("Completed", "Stopped"):
+                if WAIT_FOR_TUNING:
+                    print("⏳ Waiting for tuning job to complete...")
+                    sm.get_waiter("hyper_parameter_tuning_job_completed_or_stopped").wait(
+                        HyperParameterTuningJobName=TUNING_JOB_NAME
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Tuning job {TUNING_JOB_NAME} not completed (status={status}). "
+                        f"Set WAIT_FOR_TUNING=true or pass a Completed job."
+                    )
+            return TUNING_JOB_NAME
 
-    # Latest Completed by prefix
+    # 2) File pointer
+    if os.path.exists(TUNING_JOB_FILE):
+        try:
+            with open(TUNING_JOB_FILE) as f:
+                name = f.read().strip()
+        except Exception:
+            name = ""
+        if name:
+            if not _valid_xgb_name(name):
+                print(f"⚠️  TUNING_JOB_FILE points to '{name}', which does not match XGB prefix "
+                      f"'{TUNING_JOB_PREFIX}'. Ignoring file pointer.")
+            else:
+                print("📦 Loaded tuning job (file):", name)
+                status = _job_status(name)
+                print("   status:", status)
+                if status in ("Completed", "Stopped"):
+                    return name
+                if WAIT_FOR_TUNING:
+                    print("⏳ Waiting for tuning job to complete...")
+                    sm.get_waiter("hyper_parameter_tuning_job_completed_or_stopped").wait(
+                        HyperParameterTuningJobName=name
+                    )
+                    return name
+                print("ℹ️ File’s tuning job not completed; selecting latest Completed instead.")
+
+    # 3) Latest Completed by prefix
     jobs = []
     token = None
     while True:
@@ -107,13 +123,17 @@ def _pick_tuning_job() -> str:
             kw["NextToken"] = token
         resp = sm.list_hyper_parameter_tuning_jobs(**kw)
         for j in resp.get("HyperParameterTuningJobSummaries", []):
-            if TUNING_JOB_PREFIX in j["HyperParameterTuningJobName"]:
-                jobs.append(j["HyperParameterTuningJobName"])
+            jname = j["HyperParameterTuningJobName"]
+            if _valid_xgb_name(jname):
+                jobs.append(jname)
         token = resp.get("NextToken")
         if not token or jobs:
             break
     if not jobs:
-        raise RuntimeError("No Completed tuning jobs found. Provide TUNING_JOB_NAME or wait for one to finish.")
+        raise RuntimeError(
+            "No Completed XGBoost tuning jobs found. "
+            f"Expected names starting with '{TUNING_JOB_PREFIX}'."
+        )
     chosen = jobs[0]
     print("✅ Selected latest Completed tuning job:", chosen)
     return chosen
@@ -129,11 +149,37 @@ def endpoint_exists(name: str) -> bool:
             return False
         raise
 
+def _training_image_from_job(job_name: str) -> str:
+    """Fallback: ask SageMaker for the training image actually used by the best job."""
+    try:
+        tj = sm.describe_training_job(TrainingJobName=job_name)
+        return tj.get("AlgorithmSpecification", {}).get("TrainingImage", "") or ""
+    except (ClientError, BotoCoreError):
+        return ""
+
+def _assert_estimator_is_xgb(estimator, best_training_job_name: str):
+    """
+    Make sure the deployed estimator is the XGBoost built-in (by image URI).
+    """
+    img = getattr(estimator, "image_uri", "") or ""
+    if not img and best_training_job_name:
+        img = _training_image_from_job(best_training_job_name)
+    if not img or "xgboost" not in img.lower():
+        raise SystemExit(
+            "❌ The selected tuner does not correspond to an XGBoost estimator.\n"
+            f"   Detected image: {img or '<empty>'}\n"
+            f"   Ensure the tuning job name starts with '{TUNING_JOB_PREFIX}'."
+        )
+
 # ------------ Choose tuning job & best estimator ------------
 tuning_job_name = _pick_tuning_job()
 tuner = HyperparameterTuner.attach(tuning_job_name, sagemaker_session=sess)
 best_estimator = tuner.best_estimator()
-print("🚀 Using best estimator from:", tuner.best_training_job())
+best_training_job_name = tuner.best_training_job()
+print("🚀 Using best estimator from:", best_training_job_name)
+
+# Safety: verify image is XGBoost
+_assert_estimator_is_xgb(best_estimator, best_training_job_name)
 
 # ------------ Resolve features for THIS deployment ------------
 job_scoped_key = f"{FEATURES_BY_TUNING_DIR}/{tuning_job_name}.txt"
@@ -200,6 +246,17 @@ variant = {
 sm.create_endpoint_config(EndpointConfigName=endpoint_config_name, ProductionVariants=[variant])
 
 # ------------ Create or update endpoint ------------
+def endpoint_exists(name: str) -> bool:
+    try:
+        sm.describe_endpoint(EndpointName=name)
+        return True
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        msg  = str(e)
+        if "Could not find endpoint" in msg or code in ("ValidationException", "ResourceNotFound", "404", "NotFound"):
+            return False
+        raise
+
 if endpoint_exists(ENDPOINT_NAME):
     print(f"♻️ Updating endpoint {ENDPOINT_NAME} -> {endpoint_config_name}")
     sm.update_endpoint(EndpointName=ENDPOINT_NAME, EndpointConfigName=endpoint_config_name)

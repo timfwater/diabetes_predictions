@@ -2,6 +2,7 @@
 boto3==1.34.131
 botocore==1.34.131
 sagemaker==2.224.0
+tensorflow==2.13.*
 
 # S3 filesystem (these versions align with botocore 1.34.x)
 fsspec==2024.2.0

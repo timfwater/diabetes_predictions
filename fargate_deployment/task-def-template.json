@@ -12,13 +12,13 @@
       "image": "REPLACE_IMAGE_URI",
       "essential": true,
       "environment": [
-        {"name": "AWS_REGION", "value": "REPLACE_AWS_REGION"},
-        {"name": "BUCKET", "value": "REPLACE_BUCKET"},
-        {"name": "PREFIX", "value": "REPLACE_PREFIX"},
-        {"name": "SELECTED_FEATURES_FILE", "value": "REPLACE_SELECTED_FEATURES_FILE"},
-        {"name": "FILTERED_INPUT_FILE", "value": "REPLACE_FILTERED_INPUT_FILE"},
-        {"name": "XGB_OUTPUT_PREFIX", "value": "REPLACE_XGB_OUTPUT_PREFIX"},
-        {"name": "SAGEMAKER_TRAINING_ROLE", "value": "REPLACE_SAGEMAKER_TRAINING_ROLE"}
+        { "name": "AWS_REGION", "value": "REPLACE_AWS_REGION" },
+        { "name": "BUCKET", "value": "REPLACE_BUCKET" },
+        { "name": "PREFIX", "value": "REPLACE_PREFIX" },
+        { "name": "SELECTED_FEATURES_FILE", "value": "REPLACE_SELECTED_FEATURES_FILE" },
+        { "name": "FILTERED_INPUT_FILE", "value": "REPLACE_FILTERED_INPUT_FILE" },
+        { "name": "XGB_OUTPUT_PREFIX", "value": "REPLACE_XGB_OUTPUT_PREFIX" },
+        { "name": "SAGEMAKER_TRAINING_ROLE", "value": "REPLACE_SAGEMAKER_TRAINING_ROLE" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
