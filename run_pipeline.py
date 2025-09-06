@@ -46,6 +46,17 @@ def run_step(py_rel_path: str, extra_env: Optional[dict] = None):
         sys.exit(code)
     print(f"✅ Completed: {step_name}")
 
+def run_step_env(py_rel_path: str, env_overrides: Optional[dict] = None):
+    """Run a preprocessing step with temporary env overrides."""
+    env = os.environ.copy()
+    if env_overrides:
+        env.update({k: str(v) for k, v in env_overrides.items() if v is not None})
+    code = subprocess.run([sys.executable, py_rel_path], env=env).returncode
+    if code != 0:
+        step_name = os.path.basename(py_rel_path)
+        print(f"❌ Step failed: {step_name} (exit {code})")
+        sys.exit(code)
+
 def latest_completed_tuning_job() -> Optional[str]:
     """XGB HPO (built-in)"""
     try:
@@ -254,13 +265,102 @@ try:
         cleanup_endpoint(ENDPOINT)
 
     # ---------------------------
-    # dual_tune (XGB + NN)
+    # NEW: data prep only (split → FS on TRAIN → apply to both)
+    # ---------------------------
+    elif PIPELINE_MODE == "prepare_selected":
+        print("🚀 PREPARE SELECTED (split → FS(train) → apply to both)\n")
+        run_step("preprocessing/split_train_test.py")
+        run_step_env("preprocessing/feature_selection.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train.csv",
+            "FS_MODE": os.getenv("FS_MODE", "cv"),
+            "FS_TOP_K": os.getenv("FS_TOP_K", "150"),
+        })
+        run_step("preprocessing/apply_selected_features.py")
+        print("\n✅ Data prepared: *_selected.csv written under 02_engineered.\n")
+
+    # ---------------------------
+    # NEW: full end-to-end experiment
+    # split → FS(train) → apply → tune → deploy → predict → eval
+    # ---------------------------
+    elif PIPELINE_MODE == "full_experiment":
+        print("🚀 FULL EXPERIMENT (split → FS(train) → apply → tune → deploy → predict → eval)\n")
+
+        # 0) (Optional) data engineering
+        # run_step("preprocessing/data_engineering.py")
+
+        # 1) Split full → train/test
+        run_step("preprocessing/split_train_test.py")
+
+        # 2) Feature selection on TRAIN
+        run_step_env("preprocessing/feature_selection.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train.csv",
+            "FS_MODE": os.getenv("FS_MODE", "cv"),
+            "FS_TOP_K": os.getenv("FS_TOP_K", "150"),
+        })
+
+        # 3) Apply selected features to both splits
+        run_step("preprocessing/apply_selected_features.py")
+
+        # 4) Tuning (XGB + NN) on TRAIN-SELECTED
+        run_step_env("preprocessing/run_tuning.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv",
+            "KFOLDS": os.getenv("KFOLDS", "5"),
+            "HPO_MAX_JOBS": os.getenv("HPO_MAX_JOBS", "20"),
+            "HPO_MAX_PARALLEL": os.getenv("HPO_MAX_PARALLEL", "4"),
+            "EVAL_METRIC": os.getenv("EVAL_METRIC", "aucpr"),
+            "OBJECTIVE_METRIC": os.getenv("OBJECTIVE_METRIC", "validation:aucpr"),
+        })
+        run_step_env("preprocessing/run_tuning_nn.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv",
+            "KFOLDS": os.getenv("KFOLDS", "5"),
+            "HPO_MAX_JOBS": os.getenv("HPO_MAX_JOBS", "20"),
+            "HPO_MAX_PARALLEL": os.getenv("HPO_MAX_PARALLEL", "4"),
+            "OBJECTIVE_METRIC": os.getenv("OBJECTIVE_METRIC", "validation:aucpr"),
+        })
+
+        # 5) Deploy both
+        run_step("preprocessing/deploy_best_xgb.py")
+        run_step("preprocessing/deploy_best_nn.py")
+        wait_endpoint_in_service(ENDPOINT)
+        wait_endpoint_in_service(ENDPOINT_NN)
+
+        # 6) Predict on TEST-SELECTED
+        # Force selected test explicitly (robust regardless of defaults)
+        subprocess.run([
+            sys.executable, "preprocessing/predict_from_both.py",
+            "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
+            "--label-col", os.getenv("LABEL_COL", "readmitted")
+        ], check=True)
+
+        # 7) Evaluate
+        subprocess.run([
+            sys.executable, "model_eval_xgb_vs_nn.py",
+            "--region", AWS_REGION, "--bucket", BUCKET,
+            "--pred-key", "03_scored/prepared_diabetes_test_selected_with_predictions.csv",
+            "--label-col", os.getenv("LABEL_COL", "readmitted"),
+            "--out-prefix", "04_eval", "--thresholds", "0.2,0.3,0.5", "--confusion-thr", "0.5"
+        ], check=True)
+
+        print("\n✅ Full experiment complete.\n")
+
+    # ---------------------------
+    # dual_tune (XGB + NN) — now aligned to selected files
     # ---------------------------
     elif PIPELINE_MODE == "dual_tune":
-        print("🚀 Starting DUAL TUNE (XGB + NN)\n")
-        run_step("preprocessing/feature_selection.py")
-        run_step("preprocessing/run_tuning.py")      # XGB HPO
-        run_step("preprocessing/run_tuning_nn.py")   # NN  HPO
+        print("🚀 Starting DUAL TUNE (XGB + NN) on TRAIN-SELECTED\n")
+        # Prepare data
+        run_step("preprocessing/split_train_test.py")
+        run_step_env("preprocessing/feature_selection.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train.csv",
+            "FS_MODE": os.getenv("FS_MODE", "cv"),
+            "FS_TOP_K": os.getenv("FS_TOP_K", "150"),
+        })
+        run_step("preprocessing/apply_selected_features.py")
+
+        # Tune on train-selected
+        run_step_env("preprocessing/run_tuning.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
+        run_step_env("preprocessing/run_tuning_nn.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
+
         if DEPLOY_AFTER_DUAL:
             job = PINNED_TUNING_JOB or latest_completed_tuning_job()
             if not job:
@@ -277,13 +377,19 @@ try:
     # ---------------------------
     elif PIPELINE_MODE == "nn_tune_only":
         print("🚀 Starting NN TUNE ONLY (with feature_selection)\n")
-        run_step("preprocessing/feature_selection.py")
-        run_step("preprocessing/run_tuning_nn.py")
+        run_step("preprocessing/split_train_test.py")
+        run_step_env("preprocessing/feature_selection.py", {
+            "FILTERED_INPUT_FILE": "prepared_diabetes_train.csv",
+            "FS_MODE": os.getenv("FS_MODE", "cv"),
+            "FS_TOP_K": os.getenv("FS_TOP_K", "150"),
+        })
+        run_step("preprocessing/apply_selected_features.py")
+        run_step_env("preprocessing/run_tuning_nn.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
         print("\n✅ NN tuning submitted (with feature selection).\n")
 
     elif PIPELINE_MODE == "nn_tune_only_no_fs":
         print("🚀 Starting NN TUNE ONLY (skip feature_selection)\n")
-        run_step("preprocessing/run_tuning_nn.py")
+        run_step_env("preprocessing/run_tuning_nn.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
         print("\n✅ NN tuning submitted (no feature selection).\n")
 
     # ---------------------------
@@ -293,9 +399,11 @@ try:
         print("🚀 NN DEPLOY → PREDICT\n")
         run_step("preprocessing/deploy_best_nn.py")
         wait_endpoint_in_service(ENDPOINT_NN)  # <-- ensure NN is ready
-        run_step("preprocessing/predict_from_both.py", {
-            "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX
-        })
+        subprocess.run([
+            sys.executable, "preprocessing/predict_from_both.py",
+            "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
+            "--label-col", os.getenv("LABEL_COL", "readmitted")
+        ], check=True)
 
     elif PIPELINE_MODE == "both_deploy_and_predict":
         print("🚀 BOTH DEPLOY → PREDICT (XGB + NN)\n")
@@ -308,10 +416,12 @@ try:
         })
         wait_endpoint_in_service(ENDPOINT)
         run_step("preprocessing/deploy_best_nn.py")
-        wait_endpoint_in_service(ENDPOINT_NN)  # <-- ensure NN is ready
-        run_step("preprocessing/predict_from_both.py", {
-            "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX
-        })
+        wait_endpoint_in_service(ENDPOINT_NN)
+        subprocess.run([
+            sys.executable, "preprocessing/predict_from_both.py",
+            "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
+            "--label-col", os.getenv("LABEL_COL", "readmitted")
+        ], check=True)
 
     else:
         raise SystemExit(f"❌ Unknown PIPELINE_MODE: {PIPELINE_MODE}")

@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # ---- Python deps ----
-COPY requirements.txt .
-# Use BuildKit cache to avoid re-downloading wheels each build
+# Uses your updated, slim runtime requirements.txt (no TensorFlow)
+COPY requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -26,6 +26,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ---- App code ----
 COPY preprocessing/ /app/preprocessing/
 COPY run_pipeline.py /app/run_pipeline.py
+# Include evaluator so full_experiment can run inside the container
+COPY model_eval_xgb_vs_nn.py /app/model_eval_xgb_vs_nn.py
 
 # Optional: placeholder so deploy scripts can read it before tuning writes it
 RUN touch /app/latest_tuning_job.txt

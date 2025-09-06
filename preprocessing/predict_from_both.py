@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, sys, io, json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 import boto3
@@ -26,8 +26,8 @@ RUN_MODE = os.getenv("RUN_MODE", "both").lower().strip()
 XGB_FEATURES_KEY = os.getenv("XGB_FEATURES_KEY")   # e.g. "02_engineered/model_feature_lists/diabetes-xgb-endpoint-features.txt"
 NN_FEATURES_KEY  = os.getenv("NN_FEATURES_KEY")    # e.g. "02_engineered/model_feature_lists/diabetes-nn-endpoint-features.txt"
 
-# Legacy fallback (kept for backward compatibility)
-TEST_KEY = os.getenv("TEST_KEY", f"{PREFIX}/prepared_diabetes_test.csv")
+# Default to the SELECTED test split
+TEST_KEY = os.getenv("TEST_KEY", f"{PREFIX}/prepared_diabetes_test_selected.csv")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
 
 sm = boto3.client("sagemaker", region_name=AWS_REGION)
@@ -209,7 +209,7 @@ def main():
     # Allow CLI overrides for input and label (so we can emit *_with_predictions)
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input-key", default=os.getenv("INPUT_KEY"), help="S3 key for input CSV (e.g., 02_engineered/test.csv)")
+    ap.add_argument("--input-key", default=os.getenv("INPUT_KEY"), help="S3 key for input CSV (e.g., 02_engineered/prepared_diabetes_test_selected.csv)")
     ap.add_argument("--label-col", default=os.getenv("LABEL_COL"), help="Name of ground-truth label column in input")
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     args = ap.parse_args()
@@ -224,10 +224,9 @@ def main():
         n_rows = len(df)
         print(f"📥 Loading input CSV with labels: s3://{BUCKET}/{input_key}  (rows={n_rows})")
     else:
-        # Backward-compatible fallback to TEST_KEY (labelless)
+        # Backward-compatible fallback to TEST_KEY
         input_key = TEST_KEY
-        txt = _s3_read_text(BUCKET, TEST_KEY)
-        df = pd.read_csv(io.StringIO(txt))
+        df = _s3_read_csv(BUCKET, TEST_KEY)
         n_rows = len(df)
         print(f"📥 Loading legacy test CSV: s3://{BUCKET}/{TEST_KEY}  (rows={n_rows})")
 
@@ -281,7 +280,7 @@ def main():
     if id_cols:
         compact = pd.concat([df[id_cols].reset_index(drop=True), compact], axis=1)
 
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     suffix = RUN_MODE
     compact_key = f"{OUTPUT_PREFIX}/predictions_{suffix}_{ts}.csv"
     _s3_write_csv(BUCKET, compact_key, compact)

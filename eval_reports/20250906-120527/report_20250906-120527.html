@@ -1,0 +1,175 @@
+<html><head><meta charset='utf-8'><title>Eval Report</title></head><body>
+<h1>Evaluation Report — XGB vs NN</h1>
+<p><b>Predictions:</b> s3://diabetes-directory/03_scored/prepared_diabetes_test_selected_with_predictions.csv</p>
+<p><b>Label column:</b> readmitted</p>
+<p><b>XGB column:</b> xgb_prob &nbsp;&nbsp; <b>NN column:</b> nn_prob</p>
+<h2>Summary metrics</h2>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>model</th>
+      <th>roc_auc</th>
+      <th>pr_auc</th>
+      <th>brier</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>xgb</td>
+      <td>0.6649</td>
+      <td>0.2206</td>
+      <td>0.2182</td>
+    </tr>
+    <tr>
+      <td>nn</td>
+      <td>0.5900</td>
+      <td>0.1721</td>
+      <td>0.6660</td>
+    </tr>
+    <tr>
+      <td>ensemble_avg</td>
+      <td>0.6503</td>
+      <td>0.2122</td>
+      <td>0.3974</td>
+    </tr>
+  </tbody>
+</table>
+<h2>Point metrics</h2>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>threshold</th>
+      <th>accuracy</th>
+      <th>precision</th>
+      <th>recall</th>
+      <th>f1</th>
+      <th>tn</th>
+      <th>fp</th>
+      <th>fn</th>
+      <th>tp</th>
+      <th>model</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>0.2000</td>
+      <td>0.1175</td>
+      <td>0.1138</td>
+      <td>0.9991</td>
+      <td>0.2043</td>
+      <td>83</td>
+      <td>17669</td>
+      <td>2</td>
+      <td>2269</td>
+      <td>xgb</td>
+    </tr>
+    <tr>
+      <td>0.3000</td>
+      <td>0.2020</td>
+      <td>0.1212</td>
+      <td>0.9657</td>
+      <td>0.2154</td>
+      <td>1851</td>
+      <td>15901</td>
+      <td>78</td>
+      <td>2193</td>
+      <td>xgb</td>
+    </tr>
+    <tr>
+      <td>0.5000</td>
+      <td>0.6721</td>
+      <td>0.1833</td>
+      <td>0.5473</td>
+      <td>0.2746</td>
+      <td>12214</td>
+      <td>5538</td>
+      <td>1028</td>
+      <td>1243</td>
+      <td>xgb</td>
+    </tr>
+    <tr>
+      <td>0.2000</td>
+      <td>0.1135</td>
+      <td>0.1134</td>
+      <td>1.0000</td>
+      <td>0.2038</td>
+      <td>2</td>
+      <td>17750</td>
+      <td>0</td>
+      <td>2271</td>
+      <td>nn</td>
+    </tr>
+    <tr>
+      <td>0.3000</td>
+      <td>0.1153</td>
+      <td>0.1136</td>
+      <td>1.0000</td>
+      <td>0.2041</td>
+      <td>38</td>
+      <td>17714</td>
+      <td>0</td>
+      <td>2271</td>
+      <td>nn</td>
+    </tr>
+    <tr>
+      <td>0.5000</td>
+      <td>0.1251</td>
+      <td>0.1143</td>
+      <td>0.9952</td>
+      <td>0.2051</td>
+      <td>245</td>
+      <td>17507</td>
+      <td>11</td>
+      <td>2260</td>
+      <td>nn</td>
+    </tr>
+    <tr>
+      <td>0.2000</td>
+      <td>0.1135</td>
+      <td>0.1134</td>
+      <td>1.0000</td>
+      <td>0.2037</td>
+      <td>1</td>
+      <td>17751</td>
+      <td>0</td>
+      <td>2271</td>
+      <td>ensemble_avg</td>
+    </tr>
+    <tr>
+      <td>0.3000</td>
+      <td>0.1157</td>
+      <td>0.1136</td>
+      <td>0.9996</td>
+      <td>0.2041</td>
+      <td>47</td>
+      <td>17705</td>
+      <td>1</td>
+      <td>2270</td>
+      <td>ensemble_avg</td>
+    </tr>
+    <tr>
+      <td>0.5000</td>
+      <td>0.1687</td>
+      <td>0.1179</td>
+      <td>0.9762</td>
+      <td>0.2104</td>
+      <td>1161</td>
+      <td>16591</td>
+      <td>54</td>
+      <td>2217</td>
+      <td>ensemble_avg</td>
+    </tr>
+  </tbody>
+</table>
+<h2>Curves & Confusion</h2><ul>
+<li>ROC — xgb:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/roc_xgb_20250906-120527.png' style='max-width:900px'></li>
+<li>PR — xgb:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/pr_xgb_20250906-120527.png' style='max-width:900px'></li>
+<li>CM — xgb:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/cm_xgb_20250906-120527.png' style='max-width:900px'></li>
+<li>ROC — nn:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/roc_nn_20250906-120527.png' style='max-width:900px'></li>
+<li>PR — nn:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/pr_nn_20250906-120527.png' style='max-width:900px'></li>
+<li>CM — nn:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/cm_nn_20250906-120527.png' style='max-width:900px'></li>
+<li>ROC — ensemble_avg:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/roc_ensemble_avg_20250906-120527.png' style='max-width:900px'></li>
+<li>PR — ensemble_avg:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/pr_ensemble_avg_20250906-120527.png' style='max-width:900px'></li>
+<li>CM — ensemble_avg:<br><img src='https://diabetes-directory.s3.amazonaws.com/04_eval/figs/cm_ensemble_avg_20250906-120527.png' style='max-width:900px'></li>
+</ul>
+</body></html>
