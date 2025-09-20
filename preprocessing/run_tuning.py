@@ -25,7 +25,7 @@ xgb_output_prefix = os.environ.get("XGB_OUTPUT_PREFIX", "xgb_output")
 xgb_output = f"s3://{bucket}/{prefix}/{xgb_output_prefix}"
 label_col = os.getenv("LABEL_COL", "readmitted")
 
-KFOLDS = int(os.getenv("KFOLDS", "4"))  # ← increase folds (was 4)
+KFOLDS = int(os.getenv("KFOLDS", "5"))  # ← increase folds (was 4)
 HPO_MAX_JOBS = int(os.getenv("HPO_MAX_JOBS", "20")) #(was 20)
 HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS)))) #(was 4)
 EVAL_METRIC = os.getenv("EVAL_METRIC", "aucpr")  # 'auc' or 'aucpr'

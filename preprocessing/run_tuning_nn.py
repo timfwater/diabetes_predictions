@@ -127,8 +127,7 @@ tf_est = TensorFlow(
         "use-class-weights": 1,
         "class-weight-pos": float(pos_weight),  # ← used in train_nn.py
         "standardize": 1,                        # ← z-score in train_nn.py
-        "aucpr-objective": 1,                    # ← log aucpr for tuner
-    },
+        "aucpr-objective": 1 if OBJECTIVE_METRIC.endswith("aucpr") else 0,    },
 )
 
 hp_ranges = {
