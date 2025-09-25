@@ -135,6 +135,9 @@ Dataset: UCI Diabetes (tabular, imbalanced ~11% positives).
 
 No PHI; academic dataset.
 
+**Project Walkthrough:**
+https://wbst-bkt.s3.us-east-1.amazonaws.com/patient_index.html
+
 We report business outcomes (cost) alongside AUC.
 
 Model bias can be assessed by stratifying metrics across subgroups (future work).
