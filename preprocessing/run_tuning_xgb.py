@@ -1,6 +1,7 @@
-# preprocessing/run_tuning.py
-import os, io, json
-import boto3, pandas as pd
+# preprocessing/run_tuning_xgb.py
+#!/usr/bin/env python3
+import os, io, json, traceback
+import boto3, pandas as pd, botocore
 from sagemaker import Session, image_uris, estimator as sm_estimator
 from sagemaker.tuner import HyperparameterTuner, ContinuousParameter, IntegerParameter
 from sagemaker.inputs import TrainingInput
@@ -19,30 +20,30 @@ bucket = os.environ.get("BUCKET", "diabetes-directory")
 prefix = os.environ.get("PREFIX", "02_engineered")
 
 # Inputs/outputs
-features_file = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
-input_file = os.environ.get("FILTERED_INPUT_FILE", "prepared_diabetes_train_selected.csv")
+features_file     = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
+input_file        = os.environ.get("FILTERED_INPUT_FILE", "prepared_diabetes_train_selected.csv")
 xgb_output_prefix = os.environ.get("XGB_OUTPUT_PREFIX", "xgb_output")
-xgb_output = f"s3://{bucket}/{prefix}/{xgb_output_prefix}"
-label_col = os.getenv("LABEL_COL", "readmitted")
+xgb_output        = f"s3://{bucket}/{prefix}/{xgb_output_prefix}"
+label_col         = os.getenv("LABEL_COL", "readmitted")
 
-KFOLDS = int(os.getenv("KFOLDS", "5"))  # ← increase folds (was 4)
-HPO_MAX_JOBS = int(os.getenv("HPO_MAX_JOBS", "20")) #(was 20)
-HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS)))) #(was 4)
-EVAL_METRIC = os.getenv("EVAL_METRIC", "aucpr")  # 'auc' or 'aucpr'
-OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", f"validation:{EVAL_METRIC}")
-INSTANCE_TYPE = os.getenv("XGB_INSTANCE_TYPE", "ml.c5.2xlarge")
+KFOLDS           = int(os.getenv("KFOLDS", "5"))
+HPO_MAX_JOBS     = int(os.getenv("HPO_MAX_JOBS", "20"))
+HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS))))
+EVAL_METRIC      = os.getenv("EVAL_METRIC", "aucpr")           # prefer PR-AUC
+OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", "validation:aucpr")
+INSTANCE_TYPE    = os.getenv("XGB_INSTANCE_TYPE", "ml.c5.2xlarge")
 
 # Persist the exact feature list used for this run
 FEATURES_USED_LATEST_KEY = f"{prefix}/features_used_latest.txt"
 FEATURES_BY_TUNING_DIR   = f"{prefix}/feature_lists/by_tuning_job"
-FOLDS_PREFIX             = f"{prefix}/kfolds"  # where fold CSVs will be written
+FOLDS_PREFIX             = f"{prefix}/kfolds"
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 def s3_put_text(bucket: str, key: str, text: str):
     s3.put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
     print(f"📤 Uploaded s3://{bucket}/{key}")
 
-# ========= Load selected (or all) features =========
+# ========= Load selected features =========
 features_path = f"s3://{bucket}/{prefix}/{features_file}"
 print(f"📥 Loading selected features from {features_path}")
 feat_df = pd.read_csv(features_path)
@@ -83,7 +84,7 @@ def _normalize_label(series: pd.Series) -> pd.Series:
 y = _normalize_label(df[label_col])
 X = df.drop(columns=[label_col])
 
-# --- Persist the exact feature list used for this run (versioned + pointer) ---
+# --- Persist the exact feature list used for this run ---
 ts = pd.Timestamp.utcnow().strftime("%Y%m%d%H%M%S")
 features_versioned_key = f"{prefix}/features_used_{ts}.txt"
 features_text = "\n".join(feature_cols)
@@ -92,7 +93,7 @@ s3_put_text(bucket, FEATURES_USED_LATEST_KEY, features_text)
 print(f"📎 Saved features list: s3://{bucket}/{features_versioned_key}")
 print(f"📌 Updated pointer:     s3://{bucket}/{FEATURES_USED_LATEST_KEY}")
 
-# ========= Write CSVs (label FIRST, NO header) =========
+# ========= Write CSVs for XGB (label FIRST, NO header) =========
 def upload_csv_to_s3_for_xgb(X_part: pd.DataFrame, y_part: pd.Series, key: str) -> str:
     out = pd.concat([y_part, X_part], axis=1)  # label first
     buf = io.StringIO()
@@ -111,10 +112,10 @@ for k, (tr, va) in enumerate(skf.split(X, y), start=1):
     folds.append((train_s3, val_s3))
 print(f"🧩 Prepared {len(folds)} folds under s3://{bucket}/{FOLDS_PREFIX}")
 
-# ========= Imbalance handling =========
+# ========= Imbalance report & fixed SPW =========
 pos = int(y.sum()); neg = int(len(y) - pos)
-spw_ratio = (neg / max(pos, 1)) if pos > 0 else 1.0
-print(f"⚖️ Class balance: pos={pos}, neg={neg}, scale_pos_weight≈{spw_ratio:.2f}")
+spw_empirical = (neg / max(pos, 1)) if pos > 0 else 1.0
+print(f"⚖️ Class balance: pos={pos}, neg={neg}, scale_pos_weight≈{spw_empirical:.4f}")
 
 # ========= Estimator & tuner =========
 xgb_image = image_uris.retrieve("xgboost", AWS_REGION, version="1.7-1")
@@ -127,12 +128,17 @@ xgb_est = sm_estimator.Estimator(
     sagemaker_session=sess,
     hyperparameters={
         "objective": "binary:logistic",
-        "eval_metric": EVAL_METRIC,             # ← optimize AUPRC by default
-        "early_stopping_rounds": "50",          # ← enable early stopping
+        "eval_metric": EVAL_METRIC,              # optimize PR-AUC
+        "early_stopping_rounds": "50",
         "verbosity": "1",
+        "scale_pos_weight": f"{spw_empirical:.6f}",  # ← FIXED (not tunable in SM built-in)
+        # sensible defaults; tuner will explore around these
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
     },
 )
 
+# Allowed tunables for SM built-in XGBoost
 hp_ranges = {
     # learning dynamics
     "eta": ContinuousParameter(0.01, 0.3),
@@ -150,11 +156,16 @@ hp_ranges = {
     # regularization
     "lambda": ContinuousParameter(0.0, 10.0),
     "alpha": ContinuousParameter(0.0, 10.0),
-}
-# Also tune scale_pos_weight around the empirical ratio
-xgb_est.set_hyperparameters(scale_pos_weight=f"{spw_ratio:.6f}")
 
-# capture both auc and aucpr formats
+    # optional stabilizer for imbalance/convergence
+    "max_delta_step": ContinuousParameter(0.0, 10.0),
+    # You may also add the following if you want broader search:
+    # "colsample_bylevel": ContinuousParameter(0.5, 1.0),
+    # "colsample_bynode": ContinuousParameter(0.5, 1.0),
+    # "num_parallel_tree": IntegerParameter(1, 4),
+}
+
+# capture both auc and aucpr formats for logs
 metric_defs = [
     {"Name": "validation:auc",   "Regex": r"validation[-:]auc[:=]([0-9\.]+)"},
     {"Name": "validation:aucpr", "Regex": r"validation[-:]aucpr[:=]([0-9\.]+)"},
@@ -162,7 +173,7 @@ metric_defs = [
 
 tuner = HyperparameterTuner(
     estimator=xgb_est,
-    objective_metric_name=OBJECTIVE_METRIC,   # e.g., validation:aucpr
+    objective_metric_name=OBJECTIVE_METRIC,   # "validation:aucpr"
     objective_type="Maximize",
     max_jobs=HPO_MAX_JOBS,
     max_parallel_jobs=HPO_MAX_PARALLEL,
@@ -171,12 +182,11 @@ tuner = HyperparameterTuner(
 )
 
 # ========= Launch tuning per fold =========
-import json, traceback, botocore
 latest_job_name = None
 started_jobs = []
 
 for i, (train_s3, val_s3) in enumerate(folds, start=1):
-    print(f"🚀 Starting tuning job for fold {i}:")
+    print(f"🚀 Starting XGB tuning job for fold {i}:")
     try:
         tuner.fit(
             inputs={
@@ -203,15 +213,15 @@ for i, (train_s3, val_s3) in enumerate(folds, start=1):
 
 # ========= Persist last job name =========
 if latest_job_name:
-    with open("/app/preprocessing/latest_tuning_job.txt", "w") as f:
-        f.write(latest_job_name)
-    print("💾 Wrote /app/preprocessing/latest_tuning_job.txt ->", latest_job_name)
     try:
+        with open("/app/preprocessing/latest_tuning_job.txt", "w") as f:
+            f.write(latest_job_name)
+        print("💾 Wrote /app/preprocessing/latest_tuning_job.txt ->", latest_job_name)
         with open("/app/latest_tuning_job.txt", "w") as f:
             f.write(latest_job_name)
         print("💾 Wrote /app/latest_tuning_job.txt ->", latest_job_name)
     except Exception as e:
-        print("⚠️ Could not write /app/latest_tuning_job.txt:", repr(e))
+        print("⚠️ Could not write local latest_tuning_job files:", repr(e))
 
     print("🧾 Tuning jobs this run:", json.dumps(started_jobs, indent=2))
     print("✅ Saved latest tuning job:", latest_job_name)

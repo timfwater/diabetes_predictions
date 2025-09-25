@@ -16,7 +16,7 @@ DEPLOY_INSTANCE_TYPE = os.getenv("DEPLOY_INSTANCE_TYPE", "ml.m5.large")
 
 # How to pick a tuning job
 TUNING_JOB_NAME   = os.getenv("TUNING_JOB_NAME", "").strip()               # optional hard pin
-TUNING_JOB_FILE   = os.getenv("TUNING_JOB_FILE", "latest_tuning_job.txt")  # written by run_tuning.py
+TUNING_JOB_FILE   = os.getenv("TUNING_JOB_FILE", "latest_tuning_job.txt")  # written by run_tuning_xgb.py
 TUNING_JOB_PREFIX = os.getenv("TUNING_JOB_PREFIX", "sagemaker-xgboost-")
 WAIT_FOR_TUNING   = os.getenv("WAIT_FOR_TUNING", "false").lower() == "true"
 

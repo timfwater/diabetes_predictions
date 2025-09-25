@@ -27,6 +27,10 @@ SMOKE_ROWS = int(os.getenv("SMOKE_ROWS", "1"))
 # Optional: after dual_tune, deploy XGB automatically?
 DEPLOY_AFTER_DUAL = os.getenv("DEPLOY_AFTER_DUAL", "false").lower() == "true"
 
+# EVAL knobs
+EVAL_MODE = os.getenv("EVAL_MODE", "both").lower()  # built_in | export | both
+EVAL_TOPK = os.getenv("EVAL_TOPK", "10")
+
 # -------- AWS clients --------
 SM = boto3.client("sagemaker", region_name=AWS_REGION)
 SM_RT = boto3.client("sagemaker-runtime", region_name=AWS_REGION)
@@ -182,6 +186,20 @@ def cleanup_endpoint(endpoint_name: str):
 
     print("✅ Cleanup completed.")
 
+def run_eval_export():
+    """
+    Run diabetes_eval_export.py to write richer artifacts to a unique S3 prefix.
+    Only call this after predict_from_both.py so both xgb_prob and nn_prob exist.
+    """
+    out_prefix = f"s3://{BUCKET}/04_eval/runs/{time.strftime('%Y%m%d-%H%M%S')}"
+    print(f"\n🖨️  Running diabetes_eval_export.py → {out_prefix}\n")
+    subprocess.run([
+        sys.executable, "diabetes_eval_export.py",
+        "--data", f"s3://{BUCKET}/03_scored/prepared_diabetes_test_selected_with_predictions.csv",
+        "--out",  out_prefix,
+        "--topk", EVAL_TOPK
+    ], check=True)
+
 # -------- Banner / sanity info --------
 print("🔍 Installed pandas version:")
 subprocess.run(["pip", "show", "pandas"])
@@ -189,7 +207,8 @@ subprocess.run(["pip", "show", "pandas"])
 print("\n🧭 Pipeline configuration:")
 print(f"• PIPELINE_MODE={PIPELINE_MODE}")
 print(f"• AWS_REGION={AWS_REGION}  • BUCKET={BUCKET}  • PREFIX={PREFIX}")
-print(f"• ENDPOINT_XGB={ENDPOINT}  • ENDPOINT_NN={ENDPOINT_NN}\n")
+print(f"• ENDPOINT_XGB={ENDPOINT}  • ENDPOINT_NN={ENDPOINT_NN}")
+print(f"• EVAL_MODE={EVAL_MODE}  • EVAL_TOPK={EVAL_TOPK}\n")
 
 # -------- Modeed pipeline --------
 try:
@@ -197,11 +216,11 @@ try:
         print("🚀 Starting FULL TRAIN → DEPLOY → PREDICT\n")
         run_step("preprocessing/data_engineering.py")
         run_step("preprocessing/feature_selection.py")
-        run_step("preprocessing/run_tuning.py")  # XGB
+        run_step("preprocessing/run_tuning_xgb.py")  # XGB
 
         job = PINNED_TUNING_JOB or latest_completed_tuning_job()
         if not job:
-            raise SystemExit("❌ No Completed tuning job found. Set TUNING_JOB_NAME or ensure run_tuning.py produced one.")
+            raise SystemExit("❌ No Completed tuning job found. Set TUNING_JOB_NAME or ensure run_tuning_xgb.py produced one.")
         run_step("preprocessing/deploy_best_xgb.py", {
             "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX,
             "ENDPOINT": ENDPOINT, "TUNING_JOB_NAME": job
@@ -211,6 +230,8 @@ try:
         run_step("preprocessing/predict_from_endpoint.py", {
             "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX, "ENDPOINT": ENDPOINT
         })
+
+        # full_train uses only XGB prediction, so we skip export here by default.
 
     elif PIPELINE_MODE == "deploy_and_predict":
         print("🚀 Starting DEPLOY → PREDICT\n")
@@ -225,6 +246,7 @@ try:
         run_step("preprocessing/predict_from_endpoint.py", {
             "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX, "ENDPOINT": ENDPOINT
         })
+        # XGB-only prediction → exporter expects nn_prob too; do not export here.
 
     elif PIPELINE_MODE == "deploy_only":
         print("🚀 Starting DEPLOY ONLY\n")
@@ -245,6 +267,7 @@ try:
         run_step("preprocessing/predict_from_endpoint.py", {
             "AWS_REGION": AWS_REGION, "BUCKET": BUCKET, "PREFIX": PREFIX, "ENDPOINT": ENDPOINT
         })
+        # XGB-only prediction → skip export.
 
     elif PIPELINE_MODE == "smoke":
         print("🚀 Starting SMOKE TEST\n")
@@ -280,13 +303,13 @@ try:
 
     # ---------------------------
     # NEW: full end-to-end experiment
-    # split → FS(train) → apply → tune → deploy → predict → eval
+    # split → FS(train) → apply → tune → deploy → predict → eval (+ export)
     # ---------------------------
     elif PIPELINE_MODE == "full_experiment":
         print("🚀 FULL EXPERIMENT (split → FS(train) → apply → tune → deploy → predict → eval)\n")
 
         # 0) (Optional) data engineering
-        # run_step("preprocessing/data_engineering.py")
+        run_step("preprocessing/data_engineering.py")
 
         # 1) Split full → train/test
         run_step("preprocessing/split_train_test.py")
@@ -302,7 +325,7 @@ try:
         run_step("preprocessing/apply_selected_features.py")
 
         # 4) Tuning (XGB + NN) on TRAIN-SELECTED
-        run_step_env("preprocessing/run_tuning.py", {
+        run_step_env("preprocessing/run_tuning_xgb.py", {
             "FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv",
             "KFOLDS": os.getenv("KFOLDS", "5"),
             "HPO_MAX_JOBS": os.getenv("HPO_MAX_JOBS", "20"),
@@ -324,27 +347,31 @@ try:
         wait_endpoint_in_service(ENDPOINT)
         wait_endpoint_in_service(ENDPOINT_NN)
 
-        # 6) Predict on TEST-SELECTED
-        # Force selected test explicitly (robust regardless of defaults)
+        # 6) Predict on TEST-SELECTED (writes 03_scored/prepared_diabetes_test_selected_with_predictions.csv)
         subprocess.run([
             sys.executable, "preprocessing/predict_from_both.py",
             "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
             "--label-col", os.getenv("LABEL_COL", "readmitted")
         ], check=True)
 
-        # 7) Evaluate
-        subprocess.run([
-            sys.executable, "model_eval_xgb_vs_nn.py",
-            "--region", AWS_REGION, "--bucket", BUCKET,
-            "--pred-key", "03_scored/prepared_diabetes_test_selected_with_predictions.csv",
-            "--label-col", os.getenv("LABEL_COL", "readmitted"),
-            "--out-prefix", "04_eval", "--thresholds", "0.2,0.3,0.5", "--confusion-thr", "0.5"
-        ], check=True)
+        # 7a) Built-in evaluator (kept)
+        if EVAL_MODE in ("built_in", "both"):
+            subprocess.run([
+                sys.executable, "model_eval_xgb_vs_nn.py",
+                "--region", AWS_REGION, "--bucket", BUCKET,
+                "--pred-key", "03_scored/prepared_diabetes_test_selected_with_predictions.csv",
+                "--label-col", os.getenv("LABEL_COL", "readmitted"),
+                "--out-prefix", "04_eval", "--thresholds", "0.2,0.3,0.5", "--confusion-thr", "0.5"
+            ], check=True)
+
+        # 7b) NEW: richer export to a unique S3 prefix
+        if EVAL_MODE in ("export", "both"):
+            run_eval_export()
 
         print("\n✅ Full experiment complete.\n")
 
     # ---------------------------
-    # dual_tune (XGB + NN) — now aligned to selected files
+    # dual_tune (XGB + NN) — aligned to selected files
     # ---------------------------
     elif PIPELINE_MODE == "dual_tune":
         print("🚀 Starting DUAL TUNE (XGB + NN) on TRAIN-SELECTED\n")
@@ -358,7 +385,7 @@ try:
         run_step("preprocessing/apply_selected_features.py")
 
         # Tune on train-selected
-        run_step_env("preprocessing/run_tuning.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
+        run_step_env("preprocessing/run_tuning_xgb.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
         run_step_env("preprocessing/run_tuning_nn.py", {"FILTERED_INPUT_FILE": "prepared_diabetes_train_selected.csv"})
 
         if DEPLOY_AFTER_DUAL:
@@ -393,17 +420,21 @@ try:
         print("\n✅ NN tuning submitted (no feature selection).\n")
 
     # ---------------------------
-    # deploy+predict for NN and BOTH
+    # deploy+predict for NN and BOTH (export enabled)
     # ---------------------------
     elif PIPELINE_MODE == "nn_deploy_and_predict":
         print("🚀 NN DEPLOY → PREDICT\n")
         run_step("preprocessing/deploy_best_nn.py")
-        wait_endpoint_in_service(ENDPOINT_NN)  # <-- ensure NN is ready
+        wait_endpoint_in_service(ENDPOINT_NN)
         subprocess.run([
             sys.executable, "preprocessing/predict_from_both.py",
             "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
             "--label-col", os.getenv("LABEL_COL", "readmitted")
         ], check=True)
+
+        # Exporter expects both probs → safe to run
+        if EVAL_MODE in ("export", "both"):
+            run_eval_export()
 
     elif PIPELINE_MODE == "both_deploy_and_predict":
         print("🚀 BOTH DEPLOY → PREDICT (XGB + NN)\n")
@@ -422,6 +453,9 @@ try:
             "--input-key", f"{PREFIX}/prepared_diabetes_test_selected.csv",
             "--label-col", os.getenv("LABEL_COL", "readmitted")
         ], check=True)
+
+        if EVAL_MODE in ("export", "both"):
+            run_eval_export()
 
     else:
         raise SystemExit(f"❌ Unknown PIPELINE_MODE: {PIPELINE_MODE}")

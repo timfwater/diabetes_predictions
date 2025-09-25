@@ -22,7 +22,7 @@
 ---
 
 ## 📂 Repository layout
-
+```
 .
 ├── Dev/notebooks/
 │ ├── data_engineering_eda.ipynb # EDA + cleaning notes
@@ -32,7 +32,7 @@
 ├── preprocessing/
 │ ├── data_engineering.py # clean/encode/splits
 │ ├── feature_selection.py # select informative features
-│ ├── run_tuning.py # SageMaker HPO (XGBoost)
+│ ├── run_tuning_xgb.py # SageMaker HPO (XGBoost)
 │ ├── deploy_best_xgb.py # (optional) deploy best model
 │ ├── predict_from_endpoint.py # (optional) real-time predict
 │ └── latest_tuning_job.txt # HPO job id cache
@@ -44,16 +44,27 @@
 │ └── ...
 ├── requirements.txt
 └── Dockerfile
-
+```
 
 
 ---
 
 ## ▶️ How to run
 
-### Option A — Local (recommended for reviewers)
+### Option A — ECS/Fargate (one-command orchestration)
 
-```bash
+```
+# Build & push image, update task def
+./fargate_deployment/build_and_push.sh
+./fargate_deployment/deploy_to_fargate.sh
+
+# Launch one task run of the pipeline
+./run_fargate_task.sh
+```
+
+### Option B — Local
+
+```
 # 1) Create a virtual env and install deps
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -63,7 +74,7 @@ python preprocessing/data_engineering.py
 python preprocessing/feature_selection.py
 
 # 3) Hyperparameter tune XGBoost on SageMaker
-python preprocessing/run_tuning.py
+python preprocessing/run_tuning_xgb.py
 
 # 4) (Optional) Deploy best model for real-time inference
 python preprocessing/deploy_best_xgb.py
@@ -71,21 +82,13 @@ python preprocessing/deploy_best_xgb.py
 # 5) Generate predictions & evaluate
 # - batch predict in your evaluation notebook OR via your own script
 # - open Dev/notebooks/evaluation_visualization.ipynb to render tables/plots
+```
 
-
-Option B — ECS/Fargate (one-command orchestration)
-
-# Build & push image, update task def
-./fargate_deployment/build_and_push.sh
-./fargate_deployment/deploy_to_fargate.sh
-
-# Launch one task run of the pipeline
-./run_fargate_task.sh
 
 
 Fargate simply wraps the same Python entrypoints in a containerized run.
 
-🧪 Metrics you’ll see
+##🧪 Metrics you’ll see
 
 ROC AUC (holdout)
 
@@ -111,7 +114,7 @@ Net_Cost_Savings: ~$300–$370 per patient
 
 Prevented_Readmissions: 500–700
 
-🧰 Configuration
+##🧰 Configuration
 
 Set AWS region/bucket once (env or .env):
 
@@ -122,7 +125,7 @@ S3_PREFIX=diabetes-ml/
 
 SageMaker permissions: the role running tuning needs sagemaker:* for training jobs and s3:{Get,Put,List} on your prefixes.
 
-📈 Reproducing the visuals
+##📈 Reproducing the visuals
 
 Open Dev/notebooks/evaluation_visualization.ipynb to render:
 
@@ -136,7 +139,7 @@ Prediction score distributions
 
 Screenshots from this notebook are included in the presentation.
 
-🔒 Notes on data, ethics, and limits
+##🔒 Notes on data, ethics, and limits
 
 Dataset: UCI Diabetes (tabular, imbalanced ~11% positives).
 
@@ -146,12 +149,3 @@ We report business outcomes (cost) alongside AUC.
 
 Model bias can be assessed by stratifying metrics across subgroups (future work).
 
-🚧 Roadmap (nice-to-have)
-
-Add a simple neural network baseline (MLP) to benchmark vs. XGBoost.
-
-SHAP-based explanations for per-patient predictions.
-
-Fairness slice metrics.
-
-Batch inference job for full test set via SageMaker Processing.

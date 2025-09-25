@@ -30,7 +30,8 @@ def load_concat_csvs(paths: List[str]) -> pd.DataFrame:
         raise RuntimeError("❌ No readable CSV files found.")
     return pd.concat(frames, axis=0, ignore_index=True)
 
-def coerce_xy(df: pd.DataFrame, label_col: str) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+def coerce_xy(df: pd.DataFrame, label_col: str) -> Tuple[np.ndarray, np.ndarray, List[str], pd.Series]:
+    """Return X, y, feature_col_names, and the per-feature means used for pre-scaling imputation."""
     if label_col not in df.columns:
         raise ValueError(f"❌ label column '{label_col}' not found. Available: {list(df.columns)[:10]}...")
     feature_cols = [c for c in df.columns if c != label_col]
@@ -50,7 +51,7 @@ def coerce_xy(df: pd.DataFrame, label_col: str) -> Tuple[np.ndarray, np.ndarray,
     y = y.loc[good]
     col_means = X.mean(axis=0, skipna=True).fillna(0.0)
     X = X.fillna(col_means)
-    return X.to_numpy(dtype=np.float32), y.to_numpy(dtype=np.float32), feature_cols
+    return X.to_numpy(dtype=np.float32), y.to_numpy(dtype=np.float32), feature_cols, col_means
 
 def compute_class_weight_auto(y: np.ndarray) -> Optional[Dict[int, float]]:
     vals, counts = np.unique(y, return_counts=True)
@@ -59,29 +60,48 @@ def compute_class_weight_auto(y: np.ndarray) -> Optional[Dict[int, float]]:
     total = counts.sum()
     return {int(v): total / (2.0 * float(c)) for v, c in zip(vals, counts)}
 
+# -----------------------------
+# Model
+# -----------------------------
 def build_model(input_dim: int,
                 hidden_dim: int = 128,
                 hidden_layers: int = 2,
                 dropout: float = 0.3,
                 lr: float = 1e-3,
-                l2_reg: float = 0.0) -> keras.Model:
+                l2_reg: float = 0.0,
+                activation: str = "relu",
+                use_batchnorm: int = 1,
+                metric_pref: str = "aucpr") -> keras.Model:
+    """MLP tuned for tabular:
+       - He init (+ BN) for ReLU-family activations
+       - Optional L2 + Dropout
+       - Tracks both AUC and AUC-PR; stores monitor metric on the model
+    """
     reg = keras.regularizers.l2(l2_reg) if l2_reg and l2_reg > 0 else None
+    init = keras.initializers.HeNormal() if activation.lower() in {"relu","gelu","selu"} else "glorot_uniform"
+
     inputs = keras.Input(shape=(input_dim,), name="features")
     x = inputs
     for _ in range(int(hidden_layers)):
-        x = keras.layers.Dense(int(hidden_dim), activation="relu", kernel_regularizer=reg)(x)
+        x = keras.layers.Dense(int(hidden_dim), activation=None, kernel_regularizer=reg, kernel_initializer=init)(x)
+        if use_batchnorm:
+            x = keras.layers.BatchNormalization()(x)
+        x = keras.layers.Activation(activation)(x)
         if dropout and dropout > 0:
             x = keras.layers.Dropout(float(dropout))(x)
+
     out = keras.layers.Dense(1, activation="sigmoid", name="logit")(x)
     model = keras.Model(inputs, out)
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=float(lr)),
-        loss="binary_crossentropy",
-        metrics=[
-            tf.keras.metrics.AUC(name="auc"),
-            tf.keras.metrics.AUC(curve="PR", name="aucpr"),
-        ],
-    )
+
+    metrics = [
+        tf.keras.metrics.AUC(name="auc"),
+        tf.keras.metrics.AUC(curve="PR", name="aucpr"),
+    ]
+    opt = keras.optimizers.Adam(learning_rate=float(lr))
+    model.compile(optimizer=opt, loss="binary_crossentropy", metrics=metrics)
+
+    # Stash preferred validation metric for callbacks
+    model._monitor_metric = "val_aucpr" if metric_pref == "aucpr" else "val_auc"
     return model
 
 def make_normalizer(kind: str, X: np.ndarray):
@@ -113,10 +133,12 @@ def main():
     ap.add_argument("--hidden-layers", type=int, default=2)
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--l2", type=float, default=0.0)
+    ap.add_argument("--activation", type=str, default="relu")
+    ap.add_argument("--use-batchnorm", type=int, default=1)
 
     # normalization & randomness
     ap.add_argument("--normalization", choices=["none", "standard", "minmax"], default="standard")
-    ap.add_argument("--standardize", type=int, default=None)  # new flag (1/0); if set overrides --normalization
+    ap.add_argument("--standardize", type=int, default=None)  # if set, overrides --normalization (1=>standard, 0=>none)
     ap.add_argument("--seed", type=int, default=42)
 
     # class-imbalance (new flags, but keep backward compat)
@@ -126,8 +148,11 @@ def main():
     # legacy compat flag from your older script
     ap.add_argument("--use-class-weight", type=str, default=None)  # "auto" | "off"
 
+    # metric preference (+ legacy aucpr switch kept)
+    ap.add_argument("--metric-pref", choices=["auc","aucpr"], default="aucpr")
+    ap.add_argument("--aucpr-objective", type=int, default=1)  # legacy; if set to 0 and metric-pref not given, falls back to ROC-AUC
+
     # misc / SageMaker
-    ap.add_argument("--aucpr-objective", type=int, default=1)  # guides which metric callbacks watch
     ap.add_argument("--model_dir", default=None)
 
     args, _ = ap.parse_known_args()
@@ -152,8 +177,8 @@ def main():
     df_tr = load_concat_csvs(train_csvs)
     df_va = load_concat_csvs(val_csvs)
 
-    Xtr, ytr, feat_cols = coerce_xy(df_tr, args.label_col)
-    Xva, yva, _         = coerce_xy(df_va, args.label_col)
+    Xtr, ytr, feat_cols, tr_means = coerce_xy(df_tr, args.label_col)
+    Xva, yva, _, _                = coerce_xy(df_va, args.label_col)
 
     # Normalization logic (supports both flags)
     if args.standardize is not None:
@@ -163,17 +188,21 @@ def main():
     norm_fn, norm_meta = make_normalizer(norm, Xtr)
     Xtr = norm_fn(Xtr); Xva = norm_fn(Xva)
 
-    # Build model
+    # Build model (BatchNorm/He init/L2 capable)
+    metric_pref = args.metric_pref if args.metric_pref is not None else ("aucpr" if args.aucpr_objective else "auc")
     model = build_model(
         input_dim=Xtr.shape[1],
         hidden_dim=args.hidden_dim,
         hidden_layers=args.hidden_layers,
         dropout=args.dropout,
         lr=args.lr,
-        l2_reg=args.l2
+        l2_reg=args.l2,
+        activation=args.activation,
+        use_batchnorm=args.use_batchnorm,
+        metric_pref=metric_pref,
     )
 
-    # Class weights (support new + legacy flags)  *** fixed underscores ***
+    # Class weights (support new + legacy flags)
     class_weight = None
     if args.use_class_weights is not None:
         if args.use_class_weights:  # 1
@@ -191,10 +220,10 @@ def main():
     if class_weight:
         print(f"🧮 Using class weights: {class_weight}")
 
-    # Callbacks: early stop + LR schedule on PR AUC (or ROC AUC)  *** fixed underscores ***
-    monitor_metric = "val_aucpr" if args.aucpr_objective else "val_auc"
-    es = keras.callbacks.EarlyStopping(monitor=monitor_metric, patience=6, restore_best_weights=True, mode="max")
-    rlrop = keras.callbacks.ReduceLROnPlateau(monitor=monitor_metric, factor=0.5, patience=3, mode="max", verbose=1)
+    # Callbacks: early stop + LR schedule on preferred metric
+    monitor_metric = getattr(model, "_monitor_metric", "val_aucpr" if args.aucpr_objective else "val_auc")
+    es = keras.callbacks.EarlyStopping(monitor=monitor_metric, patience=8, restore_best_weights=True, mode="max")
+    rlrop = keras.callbacks.ReduceLROnPlateau(monitor=monitor_metric, factor=0.5, patience=4, mode="max", verbose=1)
 
     # Train
     hist = model.fit(
@@ -213,7 +242,7 @@ def main():
     auc   = float(roc_auc_score(yva, preds))
     ap    = float(average_precision_score(yva, preds))
 
-    # Emit for tuner regex (both names supported):
+    # Emit for tuner regex (both names supported)
     print(f"validation:auc={auc:.6f}")
     print(f"validation-auc={auc:.6f}")
     print(f"validation:aucpr={ap:.6f}")
@@ -224,11 +253,16 @@ def main():
     os.makedirs(final_dir, exist_ok=True)
     model.save(final_dir)
 
+    # Prepare JSON-serializable imputation payload aligned to feature order
+    impute_cols  = list(feat_cols)
+    impute_means = [float(tr_means.get(c, 0.0)) for c in impute_cols]
+
     artifacts = {
         "validation_auc": float(auc),
         "validation_aucpr": float(ap),
-        "feature_names": feat_cols,
-        "normalization": norm_meta,
+        "feature_names": impute_cols,  # explicit order
+        "normalization": norm_meta,    # contains scaler stats
+        "imputation": {"columns": impute_cols, "means": impute_means},  # ← NEW: for predict-time fillna
         "class_weight": class_weight,
         "hyperparams": {
             "epochs": int(args.epochs),
@@ -240,6 +274,9 @@ def main():
             "l2": float(args.l2),
             "seed": int(args.seed),
             "normalization": norm,
+            "activation": args.activation,
+            "use_batchnorm": int(args.use_batchnorm),
+            "metric_pref": metric_pref,
         }
     }
     with open(os.path.join(model_dir, "artifacts.json"), "w") as f:

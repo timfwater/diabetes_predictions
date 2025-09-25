@@ -33,7 +33,8 @@ nn_instance_type = os.getenv("NN_INSTANCE_TYPE", "ml.c5.2xlarge")
 KFOLDS = int(os.getenv("KFOLDS", "5"))
 HPO_MAX_JOBS = int(os.getenv("HPO_MAX_JOBS", "20"))
 HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS))))
-OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", "validation:aucpr")  # prefer PR AUC
+# Force PR-AUC optimization by default
+OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", "validation:aucpr")
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 def s3_put_text(bucket: str, key: str, text: str):
@@ -105,6 +106,8 @@ pos = int(y.sum()); neg = int(len(y) - pos)
 pos_weight = (neg / max(pos,1)) if pos > 0 else 1.0
 print(f"⚖️ Class balance: pos={pos}, neg={neg}, pos_weight≈{pos_weight:.2f}")
 
+# ... keep everything above unchanged ...
+
 tf_est = TensorFlow(
     entry_point="train_nn.py",
     source_dir=source_dir_path,
@@ -118,24 +121,40 @@ tf_est = TensorFlow(
     sagemaker_session=sess,
     hyperparameters={
         "label-col": label_col,
-        "epochs": 60,                 # give early stopping room
-        "batch-size": 256,
-        "lr": 1e-3,
-        "hidden-dim": 128,
-        "hidden-layers": 2,
-        "dropout": 0.3,
+        # Stronger defaults; ES will stop early
+        "epochs": 200,
+        "batch-size": 128,
+        "lr": 3e-4,
+        "hidden-dim": 256,
+        "hidden-layers": 3,
+        "dropout": 0.2,
+        "l2": 1e-4,
+        "activation": "relu",
+        "use-batchnorm": 1,
         "use-class-weights": 1,
-        "class-weight-pos": float(pos_weight),  # ← used in train_nn.py
-        "standardize": 1,                        # ← z-score in train_nn.py
-        "aucpr-objective": 1 if OBJECTIVE_METRIC.endswith("aucpr") else 0,    },
+        "class-weight-pos": float(pos_weight),
+        # Scaling + objective wiring (pin these; don't tune)
+        "standardize": 1,
+        "metric-pref": "aucpr",
+        "aucpr-objective": 1,
+    },
 )
 
+# ======== HPO search space (no single-value categoricals) ========
+spw_low  = max(1.0, pos_weight ** 0.5)
+spw_high = max(pos_weight * 1.5, pos_weight + 0.1)
+
 hp_ranges = {
-    "lr": ContinuousParameter(1e-4, 3e-2),
-    "dropout": ContinuousParameter(0.0, 0.7),
-    "hidden-dim": IntegerParameter(64, 512),
-    "hidden-layers": IntegerParameter(1, 5),
-    "batch-size": CategoricalParameter([128, 256, 512, 1024]),
+    "lr": ContinuousParameter(1e-5, 3e-3),
+    "dropout": ContinuousParameter(0.0, 0.6),
+    "hidden-dim": IntegerParameter(64, 1024),
+    "hidden-layers": IntegerParameter(1, 6),
+    "batch-size": CategoricalParameter([64, 128, 256, 512]),
+    "l2": ContinuousParameter(1e-6, 1e-2),
+    "activation": CategoricalParameter(["relu", "gelu", "selu"]),
+    "standardize": CategoricalParameter([0, 1]),
+    # NOTE: removed "metric-pref" from HPO to avoid single-value categorical
+    "class-weight-pos": ContinuousParameter(spw_low, spw_high),
 }
 
 metric_defs = [
@@ -145,13 +164,12 @@ metric_defs = [
 
 tuner = HyperparameterTuner(
     estimator=tf_est,
-    objective_metric_name=OBJECTIVE_METRIC,   # default validation:aucpr
+    objective_metric_name=OBJECTIVE_METRIC,   # "validation:aucpr"
     objective_type="Maximize",
     max_jobs=HPO_MAX_JOBS,
     max_parallel_jobs=HPO_MAX_PARALLEL,
     hyperparameter_ranges=hp_ranges,
     metric_definitions=metric_defs,
-    # early_stopping_type="Auto",
 )
 
 # ========= Launch tuning per fold =========
