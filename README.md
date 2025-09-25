@@ -88,7 +88,7 @@ python preprocessing/deploy_best_xgb.py
 
 Fargate simply wraps the same Python entrypoints in a containerized run.
 
-##🧪 Metrics you’ll see
+## 🧪 Metrics you’ll see
 
 ROC AUC (holdout)
 
@@ -104,17 +104,7 @@ Recall / Precision / F1 / Specificity / Accuracy
 
 Feature importances (model + FS stage)
 
-Example (test set, cost-optimized threshold):
-
-Cutoff: ~8%
-
-ROC_AUC: ~0.59–0.63
-
-Net_Cost_Savings: ~$300–$370 per patient
-
-Prevented_Readmissions: 500–700
-
-##🧰 Configuration
+## 🧰 Configuration
 
 Set AWS region/bucket once (env or .env):
 
@@ -125,7 +115,7 @@ S3_PREFIX=diabetes-ml/
 
 SageMaker permissions: the role running tuning needs sagemaker:* for training jobs and s3:{Get,Put,List} on your prefixes.
 
-##📈 Reproducing the visuals
+## 📈 Reproducing the visuals
 
 Open Dev/notebooks/evaluation_visualization.ipynb to render:
 
@@ -139,7 +129,7 @@ Prediction score distributions
 
 Screenshots from this notebook are included in the presentation.
 
-##🔒 Notes on data, ethics, and limits
+## 🔒 Notes on data, ethics, and limits
 
 Dataset: UCI Diabetes (tabular, imbalanced ~11% positives).
 
