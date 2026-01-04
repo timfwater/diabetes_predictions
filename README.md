@@ -1,143 +1,78 @@
-# Diabetes Readmissions — Cost-Optimized ML Pipeline (AWS)
+# Diabetes Readmissions --- Cost-Optimized ML Pipeline (AWS)
 
-**Goal:** Predict 30-day readmissions for diabetic patients and choose an operating threshold that **maximizes cost savings** (not just ROC AUC).
+Problem: Predict 30-day hospital readmissions among diabetic patients
+and choose a decision threshold that maximizes net cost savings, not
+just ROC AUC.
 
-**Stack (end-to-end):** S3 • PySpark/Pandas (EDA + prep) • Feature Selection • XGBoost (SageMaker HPO) • Best-model deploy (optional) • Batch predictions → S3 • Evaluation & business metrics • ECS/Fargate (optional orchestrator)
+Stack (end-to-end): S3 • PySpark/Pandas (EDA + prep) • Feature Selection
+• XGBoost & Neural Network models • SageMaker HPO • Optional endpoint
+deployment • Batch predictions to S3 • Evaluation & business metrics •
+ECS/Fargate (optional orchestrator)
 
----
+## What this project shows
 
-## 🔎 What this project shows
-- Practical ML framing for an **imbalanced** clinical outcome.
-- **Feature selection** + **hyperparameter tuning** for XGBoost via SageMaker.
-- Evaluation beyond AUC: **net cost savings**, **prevented readmissions**, and confusion-matrix metrics.
-- Production-style execution via **ECS/Fargate** (optional), or fully local.
+-   Practical ML framing for an imbalanced clinical outcome (\~11%
+    positives)
+-   Feature selection and hyperparameter tuning using SageMaker
+-   Evaluation beyond AUC, including net cost savings and avoided
+    readmissions
+-   Comparison of XGBoost vs Neural Network models
+-   Production-style execution via ECS/Fargate or fully local runs
 
----
+## Architecture (high-level)
 
-## 🗺️ Architecture (high-level)
+Raw CSV → Preprocess / Feature Select → SageMaker HPO (XGB) → Best Model
+→ Optional Endpoint → Batch Predict → Evaluate (AUC + Cost) → Report
 
-**Raw CSV → Preprocess/Feature Select → SageMaker HPO (XGB) → Best Model → (Optional) Endpoint → Batch Predict → Evaluate (AUC & Cost) → Report**
+## Repository layout
 
+Dev/notebooks/: data_engineering_eda.ipynb, feature_selection_eda.ipynb,
+model_tuning.ipynb, evaluation_visualization.ipynb\
+preprocessing/: data_engineering.py, feature_selection.py,
+run_tuning_xgb.py, deploy_best_xgb.py, predict_from_endpoint.py\
+Other key files: run_pipeline.py, requirements.txt, Dockerfile,
+fargate_deployment/
 
----
+## How to run
 
-## 📂 Repository layout
-```
-.
-├── Dev/notebooks/
-│ ├── data_engineering_eda.ipynb # EDA + cleaning notes
-│ ├── feature_selection_eda.ipynb # FS rationale & checks
-│ ├── model_tuning.ipynb # HPO results exploration
-│ └── evaluation_visualization.ipynb # confusion matrix, tables, plots
-├── preprocessing/
-│ ├── data_engineering.py # clean/encode/splits
-│ ├── feature_selection.py # select informative features
-│ ├── run_tuning_xgb.py # SageMaker HPO (XGBoost)
-│ ├── deploy_best_xgb.py # (optional) deploy best model
-│ ├── predict_from_endpoint.py # (optional) real-time predict
-│ └── latest_tuning_job.txt # HPO job id cache
-├── run_pipeline.py # single entrypoint (CLI)
-├── fargate_deployment/ # optional containerized orchestration
-│ ├── build_and_push.sh
-│ ├── deploy_to_fargate.sh
-│ ├── task-def-template.json
-│ └── ...
-├── requirements.txt
-└── Dockerfile
-```
+Option A --- ECS/Fargate: run build_and_push.sh, deploy_to_fargate.sh,
+then run_fargate_task.sh to execute the full pipeline as a batch job.
 
+Option B --- Local execution: create a virtual environment, install
+requirements, run preprocessing scripts, perform SageMaker tuning,
+optionally deploy the best model, and evaluate outputs using the
+provided notebook or eval_reports directory.
 
----
+## Metrics you will see
 
-## ▶️ How to run
+Model metrics include ROC AUC, PR AUC, and confusion matrix at a
+selected threshold.\
+Operational KPIs include net cost savings, prevented readmissions,
+precision, recall, F1, specificity, and accuracy.\
+Feature-level insights include feature importances from XGBoost and
+selected features from the feature-selection stage.
 
-### Option A — ECS/Fargate (one-command orchestration)
+## Configuration
 
-```
-# Build & push image, update task def
-./fargate_deployment/build_and_push.sh
-./fargate_deployment/deploy_to_fargate.sh
+Common environment variables: AWS_REGION, S3_BUCKET, S3_PREFIX.\
+The SageMaker execution role needs permissions for tuning/training and
+S3 read/write access.
 
-# Launch one task run of the pipeline
-./run_fargate_task.sh
-```
+## Reproducing visuals
 
-### Option B — Local
+Use Dev/notebooks/evaluation_visualization.ipynb to regenerate confusion
+matrices, ROC and PR curves, cost-versus-threshold analyses, and
+feature-importance plots.\
+Evaluation summaries are also written to eval_reports/.
 
-```
-# 1) Create a virtual env and install deps
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+## Notes on data, ethics, and limits
 
-# 2) Preprocess + feature select
-python preprocessing/data_engineering.py
-python preprocessing/feature_selection.py
+Dataset: UCI Diabetes Readmissions (no PHI).\
+Imbalanced prediction problem (\~11% positive).\
+Readmission risk is a proxy, not clinical need; cost estimates are
+illustrative.\
+Subgroup fairness analysis is future work.
 
-# 3) Hyperparameter tune XGBoost on SageMaker
-python preprocessing/run_tuning_xgb.py
+## Portfolio walkthrough page
 
-# 4) (Optional) Deploy best model for real-time inference
-python preprocessing/deploy_best_xgb.py
-
-# 5) Generate predictions & evaluate
-# - batch predict in your evaluation notebook OR via your own script
-# - open Dev/notebooks/evaluation_visualization.ipynb to render tables/plots
-```
-
-
-
-Fargate simply wraps the same Python entrypoints in a containerized run.
-
-## 🧪 Metrics you’ll see
-
-ROC AUC (holdout)
-
-Confusion matrix at the chosen threshold
-
-Operational KPIs:
-
-Net_Cost_Savings (program cost vs. prevented readmissions value)
-
-Prevented_Readmissions
-
-Recall / Precision / F1 / Specificity / Accuracy
-
-Feature importances (model + FS stage)
-
-## 🧰 Configuration
-
-Set AWS region/bucket once (env or .env):
-
-AWS_REGION=us-east-1
-S3_BUCKET=your-bucket
-S3_PREFIX=diabetes-ml/
-
-
-SageMaker permissions: the role running tuning needs sagemaker:* for training jobs and s3:{Get,Put,List} on your prefixes.
-
-## 📈 Reproducing the visuals
-
-Open Dev/notebooks/evaluation_visualization.ipynb to render:
-
-Confusion matrix for the final threshold
-
-Model comparison table (AUC vs. cost)
-
-Feature importances
-
-Prediction score distributions
-
-Screenshots from this notebook are included in the presentation.
-
-## 🔒 Notes on data, ethics, and limits
-
-Dataset: UCI Diabetes (tabular, imbalanced ~11% positives).
-
-No PHI; academic dataset.
-
-We report business outcomes (cost) alongside AUC.
-
-Model bias can be assessed by stratifying metrics across subgroups (future work).
-
-**Project Walkthrough:**
-https://wbst-bkt.s3.us-east-1.amazonaws.com/patient_index.html
+https://wbst-bkt.s3.amazonaws.com/index.html
