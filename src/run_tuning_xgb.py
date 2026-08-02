@@ -214,9 +214,6 @@ for i, (train_s3, val_s3) in enumerate(folds, start=1):
 # ========= Persist last job name =========
 if latest_job_name:
     try:
-        with open("/app/preprocessing/latest_tuning_job.txt", "w") as f:
-            f.write(latest_job_name)
-        print("💾 Wrote /app/preprocessing/latest_tuning_job.txt ->", latest_job_name)
         with open("/app/latest_tuning_job.txt", "w") as f:
             f.write(latest_job_name)
         print("💾 Wrote /app/latest_tuning_job.txt ->", latest_job_name)

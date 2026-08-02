@@ -25,14 +25,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir -r requirements.txt
 
 # ---- App code ----
-COPY preprocessing/ /app/preprocessing/
-COPY run_pipeline.py /app/run_pipeline.py
-COPY model_eval_xgb_vs_nn.py /app/model_eval_xgb_vs_nn.py
-# ✅ include the exporter so it can run inside the container
-COPY diabetes_eval_export.py /app/diabetes_eval_export.py
+COPY src/ /app/src/
+COPY config.yaml /app/config.yaml
 
 # Optional: placeholder so deploy scripts can read it before tuning writes it
 RUN touch /app/latest_tuning_job.txt
 
 # ---- Default command ----
-CMD ["python", "run_pipeline.py"]
+CMD ["python", "-m", "src.run_pipeline"]

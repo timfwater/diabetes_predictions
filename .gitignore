@@ -34,7 +34,7 @@ env/
 
 # AWS/ECS intermediates (generated)
 fargate_deployment/final-task-def.json
-preprocessing/latest_tuning_job.txt
+latest_tuning_job.txt
 
 # Environment config (keep real secrets out of git)
 fargate_deployment/config.env

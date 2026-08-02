@@ -46,6 +46,6 @@ echo "   NN_OUTPUT_PREFIX        = ${NN_OUTPUT_PREFIX}"
 export S3_BUCKET="${BUCKET}"
 export S3_PREFIX="${PREFIX}"
 
-python preprocessing/run_tuning_nn.py
+python -m src.run_tuning_nn
 
 echo "✅ Submitted NN tuning jobs. Check progress in AWS Console → SageMaker → Hyperparameter tuning jobs."
