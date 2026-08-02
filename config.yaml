@@ -1,0 +1,118 @@
+# =============================================================================
+# Diabetes Readmissions Pipeline - Central Configuration
+# =============================================================================
+# Single source of truth. Every value here can be overridden by an environment
+# variable using the UPPERCASE key shown in brackets, e.g.:
+#
+#   BUCKET=my-other-bucket python -m src.run_pipeline --steps split
+#
+# Infrastructure identifiers (account ID, subnets, roles) live in
+# config.infra.yaml, which is gitignored. See config.infra.example.yaml.
+# =============================================================================
+
+aws:
+  region: us-east-1                    # [AWS_REGION]
+
+storage:
+  bucket: diabetes-directory           # [BUCKET]
+  raw_prefix: 01_raw                   # [RAW_PREFIX]
+  engineered_prefix: 02_engineered     # [PREFIX]
+  scored_prefix: 03_scored             # [OUTPUT_PREFIX]
+  eval_prefix: 04_eval                 # [EVAL_PREFIX]
+  input_file: Diabetes_Input.csv       # [INPUT_FILE]
+
+data:
+  label_col: readmitted                # [LABEL_COL]
+
+  # Passthrough columns: carried through data engineering but excluded from
+  # the model feature matrix. patient_nbr is required for the grouped split
+  # (phase 2); payer_code and race are retained for subgroup analysis.
+  # NOTE: currently unused - data_engineering.py still drops these. Wiring
+  # them up is the first task of phase 2.
+  passthrough_cols:
+    - patient_nbr
+    - encounter_id
+
+  # Filenames within engineered_prefix
+  files:
+    full: prepared_diabetes_full.csv
+    train: prepared_diabetes_train.csv
+    test: prepared_diabetes_test.csv
+    train_selected: prepared_diabetes_train_selected.csv
+    test_selected: prepared_diabetes_test_selected.csv
+    selected_features: selected_features.csv    # [SELECTED_FEATURES_FILE]
+
+split:
+  test_size: 0.20                      # [TEST_SIZE]
+  seed: 42                             # [SPLIT_SEED]
+
+  # "stratified" = current behaviour (StratifiedShuffleSplit on the label).
+  # "grouped"    = GroupShuffleSplit on group_col. Phase 2 target.
+  # Left at "stratified" so this refactor changes nothing.
+  strategy: stratified                 # [SPLIT_STRATEGY]
+  group_col: patient_nbr               # [SPLIT_GROUP_COL]
+
+feature_selection:
+  # -------------------------------------------------------------------------
+  # RESOLVED CONFLICT: config.env previously set FS_CUM_IMPORTANCE=0.9 AND
+  # TOP_N=50, while run_pipeline.py passed FS_TOP_K=150. Because
+  # feature_selection.py checks FS_CUM_IMPORTANCE first, only 0.9 was ever
+  # live; the other two were dead settings. Preserving live behaviour here.
+  # -------------------------------------------------------------------------
+  method: cumulative_importance        # [FS_METHOD] "cumulative_importance" | "top_k"
+  cum_importance: 0.9                  # [FS_CUM_IMPORTANCE] used when method=cumulative_importance
+  top_k: 150                           # [FS_TOP_K] used when method=top_k
+  mode: cv                             # [FS_MODE] "cv" | "quick"
+  cv_folds: 5
+  seed: 42
+
+tuning:
+  kfolds: 5                            # [KFOLDS]
+  max_jobs: 20                         # [HPO_MAX_JOBS]
+  max_parallel: 4                      # [HPO_MAX_PARALLEL]
+  eval_metric: aucpr                   # [EVAL_METRIC]
+  objective_metric: validation:aucpr   # [OBJECTIVE_METRIC]
+
+  xgb:
+    instance_type: ml.c5.2xlarge       # [XGB_INSTANCE_TYPE]
+    output_prefix: xgb_output          # [XGB_OUTPUT_PREFIX]
+    image_version: "1.7-1"
+    # Phase 2: set to false and let the cost-optimal threshold do the
+    # rebalancing, so raw scores remain interpretable as probabilities.
+    use_scale_pos_weight: true         # [XGB_USE_SPW]
+
+  nn:
+    instance_type: ml.c5.2xlarge       # [NN_INSTANCE_TYPE]
+    output_prefix: nn_output           # [NN_OUTPUT_PREFIX]
+    framework_version: "2.13"
+    py_version: py310
+
+deploy:
+  instance_type: ml.m5.large           # [DEPLOY_INSTANCE_TYPE]
+  xgb_endpoint: diabetes-xgb-endpoint  # [ENDPOINT]
+  nn_endpoint: diabetes-nn-endpoint    # [ENDPOINT_NN]
+  wait_for_tuning: true                # [WAIT_FOR_TUNING]
+  tuning_job_file: /app/latest_tuning_job.txt   # [TUNING_JOB_FILE]
+  tuning_job_name: ""                  # [TUNING_JOB_NAME] optional hard pin
+
+predict:
+  batch_size: 500                      # [BATCH_SIZE]
+  run_mode: both                       # [RUN_MODE] "both" | "xgb" | "nn"
+
+evaluation:
+  topk: 10                             # [EVAL_TOPK]
+  threshold_min: 0.01
+  threshold_max: 0.99
+  threshold_step: 0.01
+  threshold_strategy: youden           # "youden" | "f1" | "fixed" | "balanced"
+  fixed_threshold: 0.5
+
+  # -------------------------------------------------------------------------
+  # Cost model. Previously hardcoded at diabetes_eval_export.py lines 493-495.
+  # Surfaced here so the phase 3 sensitivity sweep can vary them without
+  # editing source.
+  # -------------------------------------------------------------------------
+  cost:
+    program_cost_per_enrollee: 500     # [COST_PROGRAM]
+    readmission_cost: 15000            # [COST_READMISSION]
+    program_efficacy: 0.50             # [COST_EFFICACY]

@@ -38,3 +38,8 @@ preprocessing/latest_tuning_job.txt
 
 # Environment config (keep real secrets out of git)
 fargate_deployment/config.env
+
+# ===== Config layer (added for config refactor) =====
+config.infra.yaml
+fargate_deployment/.last_image_uri
+baseline/

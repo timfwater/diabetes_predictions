@@ -1,0 +1,34 @@
+# =============================================================================
+# Infrastructure identifiers - COPY TO config.infra.yaml AND FILL IN
+# =============================================================================
+#   cp config.infra.example.yaml config.infra.yaml
+#
+# config.infra.yaml is gitignored. This example file is committed so anyone
+# cloning the repo knows what to provide. None of these are secrets in the
+# credential sense, but account IDs, subnet IDs and role ARNs are deployment
+# details that don't belong in a public portfolio repo.
+# =============================================================================
+
+infra:
+  account_id: "000000000000"
+
+  # IAM roles
+  sagemaker_role: arn:aws:iam::000000000000:role/YourSageMakerExecutionRole
+  task_role: arn:aws:iam::000000000000:role/YourECSTaskRole
+  task_execution_role: arn:aws:iam::000000000000:role/YourECSExecutionRole
+
+  # ECS / Fargate
+  ecs_cluster: diabetes-cluster
+  task_family: diabetes
+  subnet_ids:
+    - subnet-xxxxxxxx
+  security_group_ids:
+    - sg-xxxxxxxxxxxxxxxxx
+  assign_public_ip: ENABLED
+
+  # ECR
+  ecr_repo_name: diabetes
+
+  # Logging
+  log_group: /ecs/diabetes
+  log_stream_prefix: ecs
