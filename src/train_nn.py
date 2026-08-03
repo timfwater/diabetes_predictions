@@ -116,6 +116,47 @@ def make_normalizer(kind: str, X: np.ndarray):
         return lambda Z: sc.transform(Z), {"type": "minmax", "min": sc.data_min_.tolist(), "max": sc.data_max_.tolist()}
     raise ValueError(f"unknown normalizer '{kind}'")
 
+def build_serving_model(trained: keras.Model, norm_meta: dict, input_dim: int) -> keras.Model:
+    """Wrap a model trained on NORMALIZED inputs so the exported artifact accepts RAW inputs.
+
+    The training loop scales X with a scikit-learn scaler and saves the scaler
+    stats to artifacts.json. Nothing downstream ever read them back: deploy
+    repackages the bare SavedModel and predict sends raw CSV, so the endpoint
+    received unscaled features for a model expecting scaled ones.
+
+    Baking the transform into the graph as a fixed, non-trainable layer removes
+    the coupling entirely - the served model is correct on its own terms and
+    needs no companion artifact. The transform is the same fixed affine map
+    applied during training, so predictions are unchanged.
+    """
+    kind = (norm_meta or {}).get("type", "none")
+    if kind == "none":
+        return trained
+
+    if kind == "standard":
+        mean = np.asarray(norm_meta["mean"], dtype=np.float32)
+        scale = np.asarray(norm_meta["scale"], dtype=np.float32)
+    elif kind == "minmax":
+        # MinMaxScaler: (x - min) / (max - min)
+        lo = np.asarray(norm_meta["min"], dtype=np.float32)
+        hi = np.asarray(norm_meta["max"], dtype=np.float32)
+        mean = lo
+        scale = np.where((hi - lo) == 0, 1.0, (hi - lo)).astype(np.float32)
+    else:
+        raise ValueError(f"cannot bake unknown normalizer '{kind}'")
+
+    # Normalization computes (x - mean) / sqrt(variance); variance = scale**2
+    # reproduces the scikit-learn transform exactly.
+    norm_layer = keras.layers.Normalization(
+        axis=-1, mean=mean, variance=(scale ** 2), name="bake_normalization"
+    )
+    raw_inputs = keras.Input(shape=(input_dim,), name="features")
+    out = trained(norm_layer(raw_inputs))
+    serving = keras.Model(raw_inputs, out, name="serving_model")
+    serving.trainable = False
+    return serving
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -249,9 +290,35 @@ def main():
     print(f"validation-aucpr={ap:.6f}")
 
     # FINAL SAVE — SavedModel directory to avoid keras options clashes
+    # Export a model that accepts RAW features: the normalization is baked in
+    # as a fixed layer so the endpoint does not depend on artifacts.json.
+    serving_model = build_serving_model(model, norm_meta, input_dim=Xtr.shape[1])
+
+    if serving_model is not model:
+        # Verify the baked transform reproduces the training-time scaling.
+        # Xva is already normalized, so recover the raw values to feed the
+        # serving model and confirm both paths agree.
+        _n = min(256, Xva.shape[0])
+        if norm_meta["type"] == "standard":
+            _raw = Xva[:_n] * np.asarray(norm_meta["scale"], dtype=np.float32) \
+                   + np.asarray(norm_meta["mean"], dtype=np.float32)
+        else:
+            _lo = np.asarray(norm_meta["min"], dtype=np.float32)
+            _hi = np.asarray(norm_meta["max"], dtype=np.float32)
+            _raw = Xva[:_n] * np.where((_hi - _lo) == 0, 1.0, (_hi - _lo)) + _lo
+        _a = model.predict(Xva[:_n], verbose=0).ravel()
+        _b = serving_model.predict(_raw.astype(np.float32), verbose=0).ravel()
+        _max_diff = float(np.max(np.abs(_a - _b)))
+        print(f"🔍 Serving-model equivalence check: max|Δp| = {_max_diff:.3e}")
+        if _max_diff > 1e-4:
+            raise RuntimeError(
+                f"Baked normalization changed predictions (max diff {_max_diff:.3e}). "
+                "Refusing to export a model that does not match training."
+            )
+
     final_dir = os.path.join(model_dir, "savedmodel")
     os.makedirs(final_dir, exist_ok=True)
-    model.save(final_dir)
+    serving_model.save(final_dir)
 
     # Prepare JSON-serializable imputation payload aligned to feature order
     impute_cols  = list(feat_cols)
@@ -262,6 +329,10 @@ def main():
         "validation_aucpr": float(ap),
         "feature_names": impute_cols,  # explicit order
         "normalization": norm_meta,    # contains scaler stats
+        # True means the exported SavedModel applies the transform itself and
+        # expects RAW features. Anything scaling inputs before calling the
+        # endpoint would double-apply it.
+        "normalization_baked_into_model": bool(norm_meta.get("type", "none") != "none"),
         "imputation": {"columns": impute_cols, "means": impute_means},  # ← NEW: for predict-time fillna
         "class_weight": class_weight,
         "hyperparams": {
