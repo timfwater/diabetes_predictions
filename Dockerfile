@@ -30,6 +30,7 @@ COPY config.yaml /app/config.yaml
 
 # Optional: placeholder so deploy scripts can read it before tuning writes it
 RUN touch /app/latest_tuning_job.txt
+ENV TUNING_JOB_FILE=/app/latest_tuning_job.txt
 
 # ---- Default command ----
 CMD ["python", "-m", "src.run_pipeline"]

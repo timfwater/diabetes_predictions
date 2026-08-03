@@ -92,7 +92,7 @@ deploy:
   xgb_endpoint: diabetes-xgb-endpoint  # [ENDPOINT]
   nn_endpoint: diabetes-nn-endpoint    # [ENDPOINT_NN]
   wait_for_tuning: true                # [WAIT_FOR_TUNING]
-  tuning_job_file: /app/latest_tuning_job.txt   # [TUNING_JOB_FILE]
+  tuning_job_file: latest_tuning_job.txt   # [TUNING_JOB_FILE]
   tuning_job_name: ""                  # [TUNING_JOB_NAME] optional hard pin
 
 predict:

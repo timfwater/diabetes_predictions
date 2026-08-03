@@ -57,6 +57,11 @@ USE_SPW = bool(cfg.get("tuning.xgb.use_scale_pos_weight"))
 # silently invalidates comparisons against saved runs.
 FOLD_SEED = 42
 
+# Where to record the last tuning job name for deploy_best_xgb.py to read.
+# Relative by default so local runs land in the project root; the Dockerfile
+# sets TUNING_JOB_FILE=/app/latest_tuning_job.txt for container runs.
+TUNING_JOB_FILE = cfg.get("deploy.tuning_job_file")
+
 # Persist the exact feature list used for this run
 FEATURES_USED_LATEST_KEY = f"{prefix}/features_used_latest.txt"
 FEATURES_BY_TUNING_DIR   = f"{prefix}/feature_lists/by_tuning_job"
@@ -246,9 +251,9 @@ for i, (train_s3, val_s3) in enumerate(folds, start=1):
 # ========= Persist last job name =========
 if latest_job_name:
     try:
-        with open("/app/latest_tuning_job.txt", "w") as f:
+        with open(TUNING_JOB_FILE, "w") as f:
             f.write(latest_job_name)
-        print("💾 Wrote /app/latest_tuning_job.txt ->", latest_job_name)
+        print(f"💾 Wrote {TUNING_JOB_FILE} ->", latest_job_name)
     except Exception as e:
         print("⚠️ Could not write local latest_tuning_job files:", repr(e))
 
