@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
-# preprocessing/apply_selected_features.py
-import os, io, boto3, pandas as pd
+"""Project the train/test splits onto the selected feature list."""
+import io
+import os
+import sys
+from pathlib import Path
 
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-BUCKET     = os.getenv("BUCKET", "diabetes-directory")
-PREFIX     = os.getenv("PREFIX", "02_engineered")
-LABEL_COL  = os.getenv("LABEL_COL", "readmitted")
+import boto3
+import pandas as pd
 
-TRAIN_IN   = os.getenv("TRAIN_IN", f"{PREFIX}/prepared_diabetes_train.csv")
-TEST_IN    = os.getenv("TEST_IN",  f"{PREFIX}/prepared_diabetes_test.csv")
-SEL_KEY    = os.getenv("SELECTED_FEATURES_KEY", f"{PREFIX}/selected_features.csv")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
 
-TRAIN_OUT  = os.getenv("TRAIN_OUT", f"{PREFIX}/prepared_diabetes_train_selected.csv")
-TEST_OUT   = os.getenv("TEST_OUT",  f"{PREFIX}/prepared_diabetes_test_selected.csv")
+AWS_REGION = cfg.get("aws.region")
+BUCKET     = cfg.get("storage.bucket")
+LABEL_COL  = cfg.get("data.label_col")
+
+# These five have no config entry of their own - they are derived from the
+# engineered prefix plus the filenames in data.files. The env vars are kept
+# as escape hatches for one-off reruns against non-standard keys.
+TRAIN_IN   = os.getenv("TRAIN_IN",  cfg.s3_key("engineered", "train"))
+TEST_IN    = os.getenv("TEST_IN",   cfg.s3_key("engineered", "test"))
+SEL_KEY    = os.getenv("SELECTED_FEATURES_KEY", cfg.s3_key("engineered", "selected_features"))
+
+TRAIN_OUT  = os.getenv("TRAIN_OUT", cfg.s3_key("engineered", "train_selected"))
+TEST_OUT   = os.getenv("TEST_OUT",  cfg.s3_key("engineered", "test_selected"))
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 

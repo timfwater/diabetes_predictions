@@ -1,21 +1,26 @@
-import os
+import sys
+from io import StringIO
+from pathlib import Path
+
+import boto3
+import numpy as np
 import pandas as pd
 from sklearn.utils import shuffle
-import boto3
-from io import StringIO
-import numpy as np
 
-# --- Load Environment Variables or Use Defaults ---
-bucket = os.environ.get("BUCKET", "diabetes-directory")
-prefix = os.environ.get("PREFIX", "02_engineered")
-raw_subfolder = os.environ.get("RAW_PREFIX", "01_raw")
-input_file = os.environ.get("INPUT_FILE", "Diabetes_Input.csv")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
+# --- Configuration ---
+bucket = cfg.get("storage.bucket")
+prefix = cfg.prefix("engineered")
+raw_subfolder = cfg.prefix("raw")
+input_file = cfg.get("storage.input_file")
 
 # --- Output file names ---
 output_files = {
-    "full":  "prepared_diabetes_full.csv",
-    "train": "prepared_diabetes_train.csv",
-    "test":  "prepared_diabetes_test.csv"
+    "full":  cfg.get("data.files.full"),
+    "train": cfg.get("data.files.train"),
+    "test":  cfg.get("data.files.test"),
 }
 
 s3_client = boto3.client("s3")

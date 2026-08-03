@@ -1,21 +1,40 @@
 # preprocessing/feature_selection.py
 #!/usr/bin/env python3
-import os, io, boto3, pandas as pd, numpy as np
+import io
+import os
+import sys
+from pathlib import Path
+
+import boto3
+import numpy as np
+import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold
 
-BUCKET = os.environ.get("BUCKET", "diabetes-directory")
-PREFIX = os.environ.get("PREFIX", "02_engineered")
-INPUT_FILE = os.environ.get("FILTERED_INPUT_FILE", "prepared_diabetes_train.csv")
-LABEL_COL = os.environ.get("LABEL_COL", "readmitted")
-OUTPUT_FILENAME = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
+BUCKET = cfg.get("storage.bucket")
+PREFIX = cfg.prefix("engineered")
+LABEL_COL = cfg.get("data.label_col")
+
+# Which dataset to rank features on. The runner sets FILTERED_INPUT_FILE to
+# the train split; ranking on anything containing test rows leaks.
+INPUT_FILE = os.environ.get("FILTERED_INPUT_FILE", cfg.get("data.files.train"))
 
 INPUT_KEY = f"{PREFIX}/{INPUT_FILE}"
-OUTPUT_KEY = f"{PREFIX}/{OUTPUT_FILENAME}"
+OUTPUT_KEY = cfg.s3_key("engineered", "selected_features")
 
-TOP_K = int(os.environ.get("FS_TOP_K", os.environ.get("TOP_N", "150")))
-FS_MODE = os.environ.get("FS_MODE", "cv").lower()  # 'cv' | 'quick'
-FS_CUM_IMPORTANCE = float(os.environ.get("FS_CUM_IMPORTANCE", "0"))  # e.g. 0.9 means 90%
+FS_MODE = str(cfg.get("feature_selection.mode")).lower()   # 'cv' | 'quick'
+FS_METHOD = str(cfg.get("feature_selection.method")).lower()
+TOP_K = int(cfg.get("feature_selection.top_k"))
+CV_FOLDS = int(cfg.get("feature_selection.cv_folds"))
+SEED = int(cfg.get("feature_selection.seed"))
+
+# Previously this was read as a float defaulting to 0, and "0 means use top_k"
+# was the implicit switch. The method is now explicit, so the two settings no
+# longer silently compete.
+FS_CUM_IMPORTANCE = float(cfg.get("feature_selection.cum_importance"))
 
 s3 = boto3.client("s3")
 
@@ -62,8 +81,7 @@ if FS_MODE == "quick":
     model.fit(X, y, verbose=False)
     gain = gain_from_model(model, num_cols)
 else:
-    from sklearn.model_selection import StratifiedKFold
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=SEED)
     gain = np.zeros(len(num_cols), dtype=np.float64)
     for tr, va in skf.split(X, y):
         model = xgb.XGBClassifier(
@@ -74,7 +92,7 @@ else:
         )
         model.fit(X.iloc[tr], y.iloc[tr], eval_set=[(X.iloc[va], y.iloc[va])], verbose=False)
         gain += gain_from_model(model, num_cols)
-    gain /= 5.0
+    gain /= float(CV_FOLDS)
 
 # --- Ranking ---
 rank = pd.DataFrame({"feature": num_cols, "gain_cv": gain})
@@ -82,7 +100,7 @@ rank = rank.sort_values("gain_cv", ascending=False).reset_index(drop=True)
 rank["cum_importance"] = rank["gain_cv"].cumsum() / rank["gain_cv"].sum()
 
 # --- Selection ---
-if FS_CUM_IMPORTANCE > 0:
+if FS_METHOD == "cumulative_importance":
     sel = rank[rank["cum_importance"] <= FS_CUM_IMPORTANCE]
     method = f"cumulative_importance<={FS_CUM_IMPORTANCE}"
 else:
