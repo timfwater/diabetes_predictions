@@ -1,26 +1,39 @@
 #!/usr/bin/env python3
-# deploy_best_nn.py  — drop-in
-import os, sys, time, io, tarfile, tempfile, shutil
+"""Register the best NN training job as a model and stand up its endpoint."""
+import os
+import shutil
+import sys
+import tarfile
+import tempfile
+import time
+from pathlib import Path
 from typing import Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError
 
-AWS_REGION  = os.getenv("AWS_REGION", "us-east-1")
-BUCKET      = os.getenv("BUCKET", "diabetes-directory")
-PREFIX      = os.getenv("PREFIX", "02_engineered")
-ENDPOINT_NN = os.getenv("ENDPOINT_NN", "diabetes-nn-endpoint")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
+AWS_REGION  = cfg.get("aws.region")
+BUCKET      = cfg.get("storage.bucket")
+PREFIX      = cfg.prefix("engineered")
+ENDPOINT_NN = cfg.get("deploy.nn_endpoint")
 
 # Endpoint instance type
-DEPLOY_INSTANCE_TYPE = os.getenv("DEPLOY_INSTANCE_TYPE_NN", "ml.m5.large")
+DEPLOY_INSTANCE_TYPE = cfg.get("deploy.instance_type")
 # Role with SageMaker permissions
-ROLE_ARN = os.getenv("SAGEMAKER_TRAINING_ROLE") or os.getenv("SAGEMAKER_ROLE")
+ROLE_ARN = cfg.get("infra.sagemaker_role")
+
+# Must match the version the model was trained under or TF-Serving will
+# refuse the SavedModel.
+NN_FRAMEWORK_VERSION = cfg.get("tuning.nn.framework_version")
 
 SM = boto3.client("sagemaker", region_name=AWS_REGION)
 S3 = boto3.client("s3", region_name=AWS_REGION)
 
 FEATURES_USED_LATEST_KEY = f"{PREFIX}/features_used_latest.txt"
-SELECTED_FEATURES_FALLBACK = f"{PREFIX}/selected_features.csv"
+SELECTED_FEATURES_FALLBACK = cfg.s3_key("engineered", "selected_features")
 ENDPOINT_FEATURES_LATEST_KEY = f"{PREFIX}/endpoint_features_latest_nn.txt"  # optional NN pointer
 
 # -------------------------------
@@ -226,7 +239,7 @@ def _resolve_tf_inference_image() -> str:
     return image_uris.retrieve(
         framework="tensorflow",
         region=AWS_REGION,
-        version="2.13",
+        version=NN_FRAMEWORK_VERSION,
         instance_type=DEPLOY_INSTANCE_TYPE,
         image_scope="inference",
     )
@@ -238,7 +251,10 @@ def _ensure_model(endpoint_name: str, model_data_s3: str, role_arn: str) -> str:
     from sagemaker.model import Model
 
     if not role_arn:
-        raise SystemExit("❌ SAGEMAKER_TRAINING_ROLE (or SAGEMAKER_ROLE) not set in env.")
+        raise SystemExit(
+            "❌ SageMaker role missing. Set infra.sagemaker_role in config.infra.yaml, "
+            "or SAGEMAKER_TRAINING_ROLE in the container environment."
+        )
 
     model_data_s3 = _ensure_savedmodel_in_s3(model_data_s3)
     image_uri = _resolve_tf_inference_image()

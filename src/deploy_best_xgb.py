@@ -1,24 +1,34 @@
-# preprocessing/deploy_best_xgb.py
+#!/usr/bin/env python3
+"""Register the best XGBoost tuning result as a model and stand up its endpoint."""
 import os
+import sys
 import time
+from pathlib import Path
+
 import boto3
 import sagemaker
 from sagemaker.tuner import HyperparameterTuner
 from botocore.exceptions import ClientError, BotoCoreError
 
-# ------------ Config ------------
-REGION = os.getenv("AWS_REGION", "us-east-1")
-BUCKET = os.getenv("BUCKET", "diabetes-directory")
-PREFIX = os.getenv("PREFIX", "02_engineered")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
 
-ENDPOINT_NAME = os.getenv("ENDPOINT", "diabetes-xgb-endpoint")
-DEPLOY_INSTANCE_TYPE = os.getenv("DEPLOY_INSTANCE_TYPE", "ml.m5.large")
+# ------------ Config ------------
+REGION = cfg.get("aws.region")
+BUCKET = cfg.get("storage.bucket")
+PREFIX = cfg.prefix("engineered")
+
+ENDPOINT_NAME = cfg.get("deploy.xgb_endpoint")
+DEPLOY_INSTANCE_TYPE = cfg.get("deploy.instance_type")
 
 # How to pick a tuning job
-TUNING_JOB_NAME   = os.getenv("TUNING_JOB_NAME", "").strip()               # optional hard pin
-TUNING_JOB_FILE   = os.getenv("TUNING_JOB_FILE", "latest_tuning_job.txt")  # written by run_tuning_xgb.py
-TUNING_JOB_PREFIX = os.getenv("TUNING_JOB_PREFIX", "sagemaker-xgboost-")
-WAIT_FOR_TUNING   = os.getenv("WAIT_FOR_TUNING", "false").lower() == "true"
+TUNING_JOB_NAME   = str(cfg.get("deploy.tuning_job_name") or "").strip()   # optional hard pin
+TUNING_JOB_FILE   = cfg.get("deploy.tuning_job_file")                      # written by run_tuning_xgb.py
+WAIT_FOR_TUNING   = bool(cfg.get("deploy.wait_for_tuning"))
+
+# Guards against attaching to a TensorFlow tuner by mistake. Tied to the
+# SageMaker built-in image naming, not to anything user-configurable.
+TUNING_JOB_PREFIX = "sagemaker-xgboost-"
 
 # Feature storage
 FEATURES_USED_LATEST_KEY = f"{PREFIX}/features_used_latest.txt"
@@ -203,15 +213,11 @@ feature_count = sum(1 for ln in features_text.splitlines() if ln.strip())
 print(f"📏 Feature list resolved for deployment: {feature_count} features")
 
 # ------------ Register model ------------
-role = (
-    getattr(best_estimator, "role", None)
-    or os.getenv("SAGEMAKER_ROLE")
-    or os.getenv("SAGEMAKER_TRAINING_ROLE")
-)
+role = getattr(best_estimator, "role", None) or cfg.get("infra.sagemaker_role")
 if not role:
     raise RuntimeError(
-        "No role available for model registration. "
-        "Set SAGEMAKER_ROLE or SAGEMAKER_TRAINING_ROLE to an IAM role ARN with SageMaker permissions."
+        "No role available for model registration. Set infra.sagemaker_role in "
+        "config.infra.yaml, or SAGEMAKER_TRAINING_ROLE in the environment."
     )
 
 model_name = f"{ENDPOINT_NAME}-model-{int(time.time())}"
@@ -246,17 +252,6 @@ variant = {
 sm.create_endpoint_config(EndpointConfigName=endpoint_config_name, ProductionVariants=[variant])
 
 # ------------ Create or update endpoint ------------
-def endpoint_exists(name: str) -> bool:
-    try:
-        sm.describe_endpoint(EndpointName=name)
-        return True
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        msg  = str(e)
-        if "Could not find endpoint" in msg or code in ("ValidationException", "ResourceNotFound", "404", "NotFound"):
-            return False
-        raise
-
 if endpoint_exists(ENDPOINT_NAME):
     print(f"♻️ Updating endpoint {ENDPOINT_NAME} -> {endpoint_config_name}")
     sm.update_endpoint(EndpointName=ENDPOINT_NAME, EndpointConfigName=endpoint_config_name)

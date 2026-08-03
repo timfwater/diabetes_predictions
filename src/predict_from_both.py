@@ -1,34 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os, sys, io, json
+"""Batch-score the test split against the XGB and/or NN endpoints."""
+import io
+import json
+import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import boto3
 import pandas as pd
 from botocore.exceptions import ClientError, BotoCoreError
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
 # -------------------
 # Config / Endpoints
 # -------------------
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-BUCKET = os.getenv("BUCKET", "diabetes-directory")
-PREFIX = os.getenv("PREFIX", "02_engineered")
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "03_scored")
+AWS_REGION = cfg.get("aws.region")
+BUCKET = cfg.get("storage.bucket")
+PREFIX = cfg.prefix("engineered")
+OUTPUT_PREFIX = cfg.prefix("scored")
 
-ENDPOINT_XGB = os.getenv("ENDPOINT_XGB", os.getenv("ENDPOINT", "diabetes-xgb-endpoint"))
-ENDPOINT_NN  = os.getenv("ENDPOINT_NN", "diabetes-nn-endpoint")
+ENDPOINT_XGB = cfg.get("deploy.xgb_endpoint")
+ENDPOINT_NN  = cfg.get("deploy.nn_endpoint")
 
 # what to run: both | xgb | nn
-RUN_MODE = os.getenv("RUN_MODE", "both").lower().strip()
+RUN_MODE = str(cfg.get("predict.run_mode")).lower().strip()
 
-# Optional explicit S3 keys for feature lists (bucket is BUCKET)
-XGB_FEATURES_KEY = os.getenv("XGB_FEATURES_KEY")   # e.g. "02_engineered/model_feature_lists/diabetes-xgb-endpoint-features.txt"
-NN_FEATURES_KEY  = os.getenv("NN_FEATURES_KEY")    # e.g. "02_engineered/model_feature_lists/diabetes-nn-endpoint-features.txt"
+# Optional explicit S3 keys for feature lists (bucket is BUCKET). No config
+# entry - these are one-off overrides for scoring against a non-default
+# serving schema.
+XGB_FEATURES_KEY = os.getenv("XGB_FEATURES_KEY")
+NN_FEATURES_KEY  = os.getenv("NN_FEATURES_KEY")
 
 # Default to the SELECTED test split
-TEST_KEY = os.getenv("TEST_KEY", f"{PREFIX}/prepared_diabetes_test_selected.csv")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
+TEST_KEY = os.getenv("TEST_KEY", cfg.s3_key("engineered", "test_selected"))
+BATCH_SIZE = int(cfg.get("predict.batch_size"))
 
 sm = boto3.client("sagemaker", region_name=AWS_REGION)
 rt = boto3.client("sagemaker-runtime", region_name=AWS_REGION)
@@ -131,7 +141,7 @@ def _resolve_features(endpoint_name: str,
         pass
 
     # 4) selected_features.csv fallback
-    sel_key = f"{PREFIX}/selected_features.csv"
+    sel_key = cfg.s3_key("engineered", "selected_features")
     tried.append(f"s3://{BUCKET}/{sel_key}")
     try:
         cols = _load_features_from_csv_first_col(sel_key)
@@ -210,7 +220,7 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--input-key", default=os.getenv("INPUT_KEY"), help="S3 key for input CSV (e.g., 02_engineered/prepared_diabetes_test_selected.csv)")
-    ap.add_argument("--label-col", default=os.getenv("LABEL_COL"), help="Name of ground-truth label column in input")
+    ap.add_argument("--label-col", default=cfg.get("data.label_col"), help="Name of ground-truth label column in input")
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     args = ap.parse_args()
 

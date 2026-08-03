@@ -1,37 +1,61 @@
-# preprocessing/run_tuning_xgb.py
 #!/usr/bin/env python3
-import os, io, json, traceback
-import boto3, pandas as pd, botocore
+"""Launch SageMaker HPO for XGBoost, one tuning job per CV fold."""
+import io
+import json
+import os
+import sys
+import traceback
+from pathlib import Path
+
+import boto3
+import botocore
+import pandas as pd
 from sagemaker import Session, image_uris, estimator as sm_estimator
 from sagemaker.tuner import HyperparameterTuner, ContinuousParameter, IntegerParameter
 from sagemaker.inputs import TrainingInput
 from sklearn.model_selection import StratifiedKFold
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
 # ========= Config & session =========
-AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
+AWS_REGION = cfg.get("aws.region")
 sess = Session(boto_session=boto3.Session(region_name=AWS_REGION))
 
-role = os.environ.get("SAGEMAKER_TRAINING_ROLE")
-print(f"✅ Detected SAGEMAKER_TRAINING_ROLE: {role}")
+role = cfg.get("infra.sagemaker_role")
+print(f"✅ Detected SageMaker role: {role}")
 if not role:
-    raise ValueError("❌ SAGEMAKER_TRAINING_ROLE env var is missing in container.")
+    raise ValueError(
+        "❌ SageMaker role missing. Set infra.sagemaker_role in config.infra.yaml, "
+        "or SAGEMAKER_TRAINING_ROLE in the container environment."
+    )
 
-bucket = os.environ.get("BUCKET", "diabetes-directory")
-prefix = os.environ.get("PREFIX", "02_engineered")
+bucket = cfg.get("storage.bucket")
+prefix = cfg.prefix("engineered")
 
 # Inputs/outputs
-features_file     = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
-input_file        = os.environ.get("FILTERED_INPUT_FILE", "prepared_diabetes_train_selected.csv")
-xgb_output_prefix = os.environ.get("XGB_OUTPUT_PREFIX", "xgb_output")
+features_file     = cfg.get("data.files.selected_features")
+input_file        = os.environ.get("FILTERED_INPUT_FILE", cfg.get("data.files.train_selected"))
+xgb_output_prefix = cfg.get("tuning.xgb.output_prefix")
 xgb_output        = f"s3://{bucket}/{prefix}/{xgb_output_prefix}"
-label_col         = os.getenv("LABEL_COL", "readmitted")
+label_col         = cfg.get("data.label_col")
 
-KFOLDS           = int(os.getenv("KFOLDS", "5"))
-HPO_MAX_JOBS     = int(os.getenv("HPO_MAX_JOBS", "20"))
-HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS))))
-EVAL_METRIC      = os.getenv("EVAL_METRIC", "aucpr")           # prefer PR-AUC
-OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", "validation:aucpr")
-INSTANCE_TYPE    = os.getenv("XGB_INSTANCE_TYPE", "ml.c5.2xlarge")
+KFOLDS           = int(cfg.get("tuning.kfolds"))
+HPO_MAX_JOBS     = int(cfg.get("tuning.max_jobs"))
+HPO_MAX_PARALLEL = int(cfg.get("tuning.max_parallel"))
+EVAL_METRIC      = cfg.get("tuning.eval_metric")
+OBJECTIVE_METRIC = cfg.get("tuning.objective_metric")
+INSTANCE_TYPE    = cfg.get("tuning.xgb.instance_type")
+XGB_IMAGE_VERSION = cfg.get("tuning.xgb.image_version")
+
+# When False, XGBoost trains on the natural class balance and its outputs are
+# usable as probabilities. When True (current default) scores are inflated
+# toward the positive class and need calibration before they mean anything.
+USE_SPW = bool(cfg.get("tuning.xgb.use_scale_pos_weight"))
+
+# Fold seed is deliberately fixed rather than configurable: changing it
+# silently invalidates comparisons against saved runs.
+FOLD_SEED = 42
 
 # Persist the exact feature list used for this run
 FEATURES_USED_LATEST_KEY = f"{prefix}/features_used_latest.txt"
@@ -103,7 +127,7 @@ def upload_csv_to_s3_for_xgb(X_part: pd.DataFrame, y_part: pd.Series, key: str) 
 
 # ========= Build stratified K folds =========
 folds = []
-skf = StratifiedKFold(n_splits=KFOLDS, shuffle=True, random_state=42)
+skf = StratifiedKFold(n_splits=KFOLDS, shuffle=True, random_state=FOLD_SEED)
 for k, (tr, va) in enumerate(skf.split(X, y), start=1):
     train_key = f"{FOLDS_PREFIX}/train_{k}.csv"
     val_key   = f"{FOLDS_PREFIX}/val_{k}.csv"
@@ -118,7 +142,24 @@ spw_empirical = (neg / max(pos, 1)) if pos > 0 else 1.0
 print(f"⚖️ Class balance: pos={pos}, neg={neg}, scale_pos_weight≈{spw_empirical:.4f}")
 
 # ========= Estimator & tuner =========
-xgb_image = image_uris.retrieve("xgboost", AWS_REGION, version="1.7-1")
+xgb_image = image_uris.retrieve("xgboost", AWS_REGION, version=XGB_IMAGE_VERSION)
+xgb_hyperparameters = {
+    "objective": "binary:logistic",
+    "eval_metric": EVAL_METRIC,              # optimize PR-AUC
+    "early_stopping_rounds": "50",
+    "verbosity": "1",
+    # sensible defaults; tuner will explore around these
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+}
+if USE_SPW:
+    # FIXED, not tunable in the SM built-in image
+    xgb_hyperparameters["scale_pos_weight"] = f"{spw_empirical:.6f}"
+    print(f"⚖️ scale_pos_weight ENABLED at {spw_empirical:.4f} - raw scores are "
+          "ranking scores, not calibrated probabilities")
+else:
+    print("⚖️ scale_pos_weight DISABLED - training on natural class balance")
+
 xgb_est = sm_estimator.Estimator(
     image_uri=xgb_image,
     role=role,
@@ -126,16 +167,7 @@ xgb_est = sm_estimator.Estimator(
     instance_type=INSTANCE_TYPE,
     output_path=xgb_output,
     sagemaker_session=sess,
-    hyperparameters={
-        "objective": "binary:logistic",
-        "eval_metric": EVAL_METRIC,              # optimize PR-AUC
-        "early_stopping_rounds": "50",
-        "verbosity": "1",
-        "scale_pos_weight": f"{spw_empirical:.6f}",  # ← FIXED (not tunable in SM built-in)
-        # sensible defaults; tuner will explore around these
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-    },
+    hyperparameters=xgb_hyperparameters,
 )
 
 # Allowed tunables for SM built-in XGBoost

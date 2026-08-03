@@ -1,40 +1,59 @@
-# preprocessing/run_tuning_nn.py
-import os, io, json
+#!/usr/bin/env python3
+"""Launch SageMaker HPO for the neural network, one tuning job per CV fold."""
+import io
+import json
+import os
+import sys
 from pathlib import Path
-import boto3, pandas as pd
+
+import boto3
+import pandas as pd
 from sagemaker import Session
 from sagemaker.tensorflow import TensorFlow
-from sagemaker.tuner import HyperparameterTuner, ContinuousParameter, IntegerParameter, CategoricalParameter
+from sagemaker.tuner import (
+    HyperparameterTuner, ContinuousParameter, IntegerParameter, CategoricalParameter,
+)
 from sagemaker.inputs import TrainingInput
 from sklearn.model_selection import StratifiedKFold
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.config import cfg  # noqa: E402
+
 # ========= Config & session =========
-AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
+AWS_REGION = cfg.get("aws.region")
 sess = Session(boto_session=boto3.Session(region_name=AWS_REGION))
 
-role = os.environ.get("SAGEMAKER_TRAINING_ROLE")
-print(f"✅ Detected SAGEMAKER_TRAINING_ROLE: {role}")
+role = cfg.get("infra.sagemaker_role")
+print(f"✅ Detected SageMaker role: {role}")
 if not role:
-    raise ValueError("❌ SAGEMAKER_TRAINING_ROLE env var is missing in container.")
+    raise ValueError(
+        "❌ SageMaker role missing. Set infra.sagemaker_role in config.infra.yaml, "
+        "or SAGEMAKER_TRAINING_ROLE in the container environment."
+    )
 
-bucket = os.environ.get("BUCKET", "diabetes-directory")
-prefix = os.environ.get("PREFIX", "02_engineered")
-label_col = os.getenv("LABEL_COL", "readmitted")
+bucket = cfg.get("storage.bucket")
+prefix = cfg.prefix("engineered")
+label_col = cfg.get("data.label_col")
 
-features_file = os.environ.get("SELECTED_FEATURES_FILE", "selected_features.csv")
-input_file = os.environ.get("FILTERED_INPUT_FILE", "prepared_diabetes_train_selected.csv")
+features_file = cfg.get("data.files.selected_features")
+input_file = os.environ.get("FILTERED_INPUT_FILE", cfg.get("data.files.train_selected"))
 
-nn_output_prefix = os.environ.get("NN_OUTPUT_PREFIX", "nn_output")
+nn_output_prefix = cfg.get("tuning.nn.output_prefix")
 fold_prefix = f"{prefix}/kfolds_nn"
 nn_output = f"s3://{bucket}/{prefix}/{nn_output_prefix}"
 
-nn_instance_type = os.getenv("NN_INSTANCE_TYPE", "ml.c5.2xlarge")
+nn_instance_type = cfg.get("tuning.nn.instance_type")
+NN_FRAMEWORK_VERSION = cfg.get("tuning.nn.framework_version")
+NN_PY_VERSION = cfg.get("tuning.nn.py_version")
 
-KFOLDS = int(os.getenv("KFOLDS", "5"))
-HPO_MAX_JOBS = int(os.getenv("HPO_MAX_JOBS", "20"))
-HPO_MAX_PARALLEL = int(os.getenv("HPO_MAX_PARALLEL", str(min(4, HPO_MAX_JOBS))))
-# Force PR-AUC optimization by default
-OBJECTIVE_METRIC = os.getenv("OBJECTIVE_METRIC", "validation:aucpr")
+KFOLDS = int(cfg.get("tuning.kfolds"))
+HPO_MAX_JOBS = int(cfg.get("tuning.max_jobs"))
+HPO_MAX_PARALLEL = int(cfg.get("tuning.max_parallel"))
+OBJECTIVE_METRIC = cfg.get("tuning.objective_metric")
+
+# Fold seed is deliberately fixed rather than configurable: changing it
+# silently invalidates comparisons against saved runs.
+FOLD_SEED = 42
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 def s3_put_text(bucket: str, key: str, text: str):
@@ -89,7 +108,7 @@ def upload_csv_with_header(df_part: pd.DataFrame, key: str) -> str:
     return f"s3://{bucket}/{key}"
 
 folds = []
-skf = StratifiedKFold(n_splits=KFOLDS, shuffle=True, random_state=42)
+skf = StratifiedKFold(n_splits=KFOLDS, shuffle=True, random_state=FOLD_SEED)
 for k, (tr, va) in enumerate(skf.split(df.drop(columns=[label_col]), y), start=1):
     train_key = f"{fold_prefix}/train_{k}.csv"
     val_key   = f"{fold_prefix}/val_{k}.csv"
@@ -106,16 +125,14 @@ pos = int(y.sum()); neg = int(len(y) - pos)
 pos_weight = (neg / max(pos,1)) if pos > 0 else 1.0
 print(f"⚖️ Class balance: pos={pos}, neg={neg}, pos_weight≈{pos_weight:.2f}")
 
-# ... keep everything above unchanged ...
-
 tf_est = TensorFlow(
     entry_point="train_nn.py",
     source_dir=source_dir_path,
     role=role,
     instance_count=1,
     instance_type=nn_instance_type,
-    framework_version="2.13",
-    py_version="py310",
+    framework_version=NN_FRAMEWORK_VERSION,
+    py_version=NN_PY_VERSION,
     output_path=nn_output,
     code_location=f"s3://{bucket}/{prefix}/code",
     sagemaker_session=sess,
