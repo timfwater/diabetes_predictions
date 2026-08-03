@@ -154,7 +154,7 @@ def build_steps() -> dict[str, Step]:
     ),
     "evaluate": Step(
         name="evaluate",
-        script="diabetes_eval_export.py",
+        script="src/diabetes_eval_export.py",
         description="Metrics, curves, cost analysis -> 04_eval/",
         aws_cost="none",
     ),
