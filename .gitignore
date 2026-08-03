@@ -43,3 +43,6 @@ fargate_deployment/config.env
 config.infra.yaml
 fargate_deployment/.last_image_uri
 baseline/
+
+.DS_Store
+__pycache__/
