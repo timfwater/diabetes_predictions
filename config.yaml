@@ -49,7 +49,7 @@ split:
   # "stratified" = current behaviour (StratifiedShuffleSplit on the label).
   # "grouped"    = GroupShuffleSplit on group_col. Phase 2 target.
   # Left at "stratified" so this refactor changes nothing.
-  strategy: stratified                 # [SPLIT_STRATEGY]
+  strategy: grouped                 # [SPLIT_STRATEGY]
   group_col: patient_nbr               # [SPLIT_GROUP_COL]
 
 feature_selection:

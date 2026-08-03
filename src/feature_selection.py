@@ -18,6 +18,10 @@ BUCKET = cfg.get("storage.bucket")
 PREFIX = cfg.prefix("engineered")
 LABEL_COL = cfg.get("data.label_col")
 
+# Columns carried through data engineering for downstream use (the grouped
+# split needs patient_nbr) but which must never be ranked as features.
+PASSTHROUGH_COLS = cfg.get("data.passthrough_cols") or []
+
 # Which dataset to rank features on. The runner sets FILTERED_INPUT_FILE to
 # the train split; ranking on anything containing test rows leaks.
 INPUT_FILE = os.environ.get("FILTERED_INPUT_FILE", cfg.get("data.files.train"))
@@ -57,7 +61,13 @@ y = pd.to_numeric(y_raw.map(mapping) if y_raw.dtype == object else y_raw,
 mask = y.notna()
 y = y[mask].astype("int8")
 
-X_all = df.loc[mask].drop(columns=[LABEL_COL])
+# patient_nbr is a high-cardinality integer ID. Left in the candidate pool it
+# would rank well on gain precisely because it lets the model memorise
+# individual patients - a worse leak than the one the grouped split fixes.
+_present_passthrough = [c for c in PASSTHROUGH_COLS if c in df.columns]
+X_all = df.loc[mask].drop(columns=[LABEL_COL] + _present_passthrough)
+if _present_passthrough:
+    print(f"🚫 Excluded passthrough columns from candidates: {_present_passthrough}")
 num_cols = X_all.select_dtypes(include=["number", "bool"]).columns.tolist()
 if not num_cols:
     raise ValueError("No numeric features found. Ensure upstream step encoded categoricals.")

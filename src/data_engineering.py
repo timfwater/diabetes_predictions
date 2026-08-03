@@ -71,8 +71,13 @@ for i in range(14, 18):
 Dcolumns[19] = "any_medication"
 diabetes.columns = Dcolumns
 
-# Drop unneeded columns
-diabetes.drop(columns=["encounter_id", "patient_nbr", "weight", "payer_code", "medical_specialty"], inplace=True)
+# Drop unneeded columns.
+# patient_nbr is deliberately RETAINED as a passthrough column: the grouped
+# split needs it to keep all of a patient's encounters on one side of the
+# train/test boundary. It is not a feature - feature_selection.py excludes
+# it from candidates and apply_selected_features.py projects it away before
+# training, so it never reaches a model.
+diabetes.drop(columns=["encounter_id", "weight", "payer_code", "medical_specialty"], inplace=True)
 
 # Recode readmitted column
 diabetes['readmitted'] = diabetes['readmitted'].replace(['NO', '>30', '<30'], [0, 0, 1])
