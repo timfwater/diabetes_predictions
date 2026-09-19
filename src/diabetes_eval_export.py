@@ -85,6 +85,21 @@ def _save_current_figure(path: str, dpi: int = 300):
         plt.close()
         print(f"✅ Saved {path}")
 
+def _write_text(path: str, text: str):
+    """Write a text file to a local path or s3://bucket/key."""
+    if path.startswith("s3://"):
+        bucket, key = path[5:].split("/", 1)
+        boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"),
+                                      ContentType="text/csv; charset=utf-8")
+        print(f"✅ Saved to s3://{bucket}/{key}")
+    else:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"✅ Saved {path}")
+
 def df_to_image(df: pd.DataFrame, filename: str, title: str | None = None, dpi: int = 300):
     """Render a small DataFrame to a static image/pdf and save (local or S3)."""
     fig, ax = plt.subplots(figsize=(len(df.columns)*1.2, len(df)*0.5 + 1))
@@ -277,7 +292,14 @@ def metrics_vs_all(
             try:
                 if not is_binary_pred:
                     xmin, xmax = np.nanmin(x), np.nanmax(x)
-                    if xmax > xmin:
+                    if xmin >= 0.0 and xmax <= 1.0:
+                        # Already a probability: score it as-is. Stretching it
+                        # to [0,1] first (the old behaviour) produced a number
+                        # that was not a Brier score.
+                        p = np.clip(x, 1e-15, 1 - 1e-15)
+                        ll = log_loss(y, p, labels=[0,1])
+                        bs = brier_score_loss(y, x)
+                    elif xmax > xmin:
                         p = (x - xmin) / (xmax - xmin)
                         ll = log_loss(y, p, labels=[0,1])
                         bs = brier_score_loss(y, p)
@@ -457,6 +479,8 @@ def main():
     p.add_argument("--label-col", default="readmitted")
     p.add_argument("--xgb-col",   default="xgb_prob")
     p.add_argument("--nn-col",    default="nn_prob")
+    p.add_argument("--lr-col",    default="lr_prob",
+                   help="Logistic baseline column; included when present")
     p.add_argument("--thr-min", type=float, default=0.05)
     p.add_argument("--thr-max", type=float, default=0.95)
     p.add_argument("--thr-step", type=float, default=0.05)
@@ -466,20 +490,23 @@ def main():
     print("✅ Config loaded.")
     df_temp = read_csv_any(args.data)
 
-    # Base frame + ensemble
+    # Base frame + ensemble (+ logistic baseline when the scored file has it)
     cols = [args.label_col, args.xgb_col, args.nn_col]
+    if args.lr_col in df_temp.columns:
+        cols.append(args.lr_col)
+    else:
+        print(f"ℹ️  '{args.lr_col}' not in scored file; evaluating without the logistic "
+              "baseline. Run the baseline_lr step first to include it.")
     df = df_temp.loc[:, cols].copy()
     df.loc[:, "ensemble_prob"] = (pd.to_numeric(df[args.xgb_col], errors="coerce") +
                                   pd.to_numeric(df[args.nn_col], errors="coerce")) / 2.0
+    score_cols = [c for c in (args.xgb_col, args.nn_col, "ensemble_prob", args.lr_col)
+                  if c in df.columns]
 
     # Threshold flags
-    df2 = add_threshold_flags(
-            add_threshold_flags(
-                add_threshold_flags(df, args.xgb_col, start=args.thr_min, end=args.thr_max, step=args.thr_step),
-                args.nn_col, start=args.thr_min, end=args.thr_max, step=args.thr_step
-            ),
-            "ensemble_prob", start=args.thr_min, end=args.thr_max, step=args.thr_step
-        )
+    df2 = df
+    for col in score_cols:
+        df2 = add_threshold_flags(df2, col, start=args.thr_min, end=args.thr_max, step=args.thr_step)
 
     # Metrics
     metrics_table = metrics_vs_all(
@@ -489,21 +516,37 @@ def main():
         invert_scores_if_auc_below_half=True,
     )
 
-    # Cost model
-    cost_of_management_program = 500
-    success_rate_of_intervention = 0.5
-    cost_of_readmission = 15000
+    # Cost model. Values come from config.yaml (evaluation.cost.*), which the
+    # pipeline runner exports as COST_*; the defaults match config.yaml.
+    cost_of_management_program = float(os.getenv("COST_PROGRAM", "500"))
+    success_rate_of_intervention = float(os.getenv("COST_EFFICACY", "0.5"))
+    cost_of_readmission = float(os.getenv("COST_READMISSION", "15000"))
+    print(f"💲 Cost model: program ${cost_of_management_program:,.0f}/enrollee, "
+          f"readmission ${cost_of_readmission:,.0f}, efficacy {success_rate_of_intervention:.0%}")
 
     metrics_table["total_cost_of_implimenting_program"] = (metrics_table["tp"]+metrics_table["fp"]) * cost_of_management_program
     metrics_table["per_patient_outlay"] = round(metrics_table["total_cost_of_implimenting_program"]/len(df2), 2)
     metrics_table["readmissions_prevented"] = round(success_rate_of_intervention * metrics_table["tp"])
     metrics_table["savings_from_readmissions_prevention"] = round(metrics_table["readmissions_prevented"] * cost_of_readmission, 2)
-    metrics_table["per_patient_savings_from_readmissions_prevention"] = round(metrics_table["savings_from_readmissions_prevention"]/len(metrics_table), 2)
+    # Per patient = divided by the number of test patients (rows), not by the
+    # number of rows in this results table as before.
+    metrics_table["per_patient_savings_from_readmissions_prevention"] = round(metrics_table["savings_from_readmissions_prevention"]/len(df2), 2)
     metrics_table["net_savings_to_hosptial_system"] = metrics_table["savings_from_readmissions_prevention"] - metrics_table["total_cost_of_implimenting_program"]
     metrics_table["net_per_patient_savings"] = round(metrics_table["net_savings_to_hosptial_system"]/len(df2), 2)
 
     # ------------- Exports -------------
     out_dir = args.out.rstrip("/")
+
+    # Machine-readable copy of the full table, so a run's numbers can be
+    # re-read later without recomputing them from the PNGs.
+    _write_text(f"{out_dir}/metrics_table.csv", metrics_table.to_csv())
+
+    # One-line-per-model summary in the terminal
+    summary = metrics_table.loc[[c for c in score_cols if c in metrics_table.index],
+                                ["auc_roc", "auc_pr", "brier"]]
+    print("\nThreshold-free summary (test set):")
+    print(summary.to_string(float_format=lambda v: f"{v:.4f}"))
+    print()
 
     # Tables
     dx1 = metrics_table.sort_values("auc_roc", ascending=False).head(args.topk)
@@ -527,7 +570,7 @@ def main():
             print(f"ℹ️  Skipping CM for '{idx_name}' (not found in metrics_table.index).")
 
     # Histograms
-    plot_histograms(df2, [args.xgb_col, args.nn_col, "ensemble_prob"],
+    plot_histograms(df2, score_cols,
                     save_dir=f"{out_dir}/histograms", file_ext=".png")
 
     print("✅ Done.")

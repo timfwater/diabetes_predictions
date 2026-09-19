@@ -152,6 +152,12 @@ def build_steps() -> dict[str, Step]:
         ],
         aws_cost="low",
     ),
+    "baseline_lr": Step(
+        name="baseline_lr",
+        script="src/train_baseline_lr.py",
+        description="Fit logistic baseline locally; add lr_prob to the scored test file",
+        aws_cost="low",
+    ),
     "evaluate": Step(
         name="evaluate",
         script="src/diabetes_eval_export.py",
@@ -166,11 +172,13 @@ PRESETS: dict[str, list] = {
     "prepare_full": ["engineer", "split", "feature_select", "apply_features"],
     "tune_both": ["tune_xgb", "tune_nn"],
     "deploy_both": ["deploy_xgb", "deploy_nn"],
-    "score_and_eval": ["predict", "evaluate"],
+    "score_and_eval": ["predict", "baseline_lr", "evaluate"],
+    # Re-evaluate saved predictions without touching endpoints (free)
+    "eval_only": ["baseline_lr", "evaluate"],
     "full_experiment": [
         "engineer", "split", "feature_select", "apply_features",
         "tune_xgb", "tune_nn", "deploy_xgb", "deploy_nn",
-        "predict", "evaluate",
+        "predict", "baseline_lr", "evaluate",
     ],
 }
 
