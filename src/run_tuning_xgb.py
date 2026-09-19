@@ -66,6 +66,7 @@ TUNING_JOB_FILE = cfg.get("deploy.tuning_job_file")
 FEATURES_USED_LATEST_KEY = f"{prefix}/features_used_latest.txt"
 FEATURES_BY_TUNING_DIR   = f"{prefix}/feature_lists/by_tuning_job"
 FOLDS_PREFIX             = f"{prefix}/kfolds"
+XGB_RUN_POINTER_KEY      = f"{prefix}/tuning_runs/xgb_latest.json"
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 def s3_put_text(bucket: str, key: str, text: str):
@@ -259,5 +260,18 @@ if latest_job_name:
 
     print("🧾 Tuning jobs this run:", json.dumps(started_jobs, indent=2))
     print("✅ Saved latest tuning job:", latest_job_name)
+
+    # Record ALL fold jobs of this run, in fold order. The latest_tuning_job
+    # pointer above only names the last fold; scoring with the fold average
+    # (predict.xgb_source=local_folds) needs every one of them. Stored in S3
+    # so it survives container restarts and Fargate runs.
+    run_record = {
+        "jobs": started_jobs,
+        "kfolds": KFOLDS,
+        "created_utc": pd.Timestamp.utcnow().isoformat(),
+        "features_key": features_versioned_key,
+    }
+    s3_put_text(bucket, XGB_RUN_POINTER_KEY, json.dumps(run_record, indent=2))
+    print(f"📌 Fold-run pointer: s3://{bucket}/{XGB_RUN_POINTER_KEY}")
 else:
     print("⚠️ No tuning jobs were started.")

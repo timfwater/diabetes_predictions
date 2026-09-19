@@ -69,6 +69,7 @@ ENV_OVERRIDES = {
     "deploy.tuning_job_name": "TUNING_JOB_NAME",
     "predict.batch_size": "BATCH_SIZE",
     "predict.run_mode": "RUN_MODE",
+    "predict.xgb_source": "XGB_SOURCE",
     "evaluation.topk": "EVAL_TOPK",
     "evaluation.cost.program_cost_per_enrollee": "COST_PROGRAM",
     "evaluation.cost.readmission_cost": "COST_READMISSION",

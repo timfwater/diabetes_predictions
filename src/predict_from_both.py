@@ -30,6 +30,10 @@ ENDPOINT_NN  = cfg.get("deploy.nn_endpoint")
 # what to run: both | xgb | nn
 RUN_MODE = str(cfg.get("predict.run_mode")).lower().strip()
 
+# Where XGB predictions come from: local_folds (average of every CV-fold model,
+# scored on this machine, no endpoint) or endpoint (single deployed fold).
+XGB_SOURCE = str(cfg.get("predict.xgb_source") or "endpoint").lower().strip()
+
 # Optional explicit S3 keys for feature lists (bucket is BUCKET). No config
 # entry - these are one-off overrides for scoring against a non-default
 # serving schema.
@@ -222,6 +226,9 @@ def main():
     ap.add_argument("--input-key", default=os.getenv("INPUT_KEY"), help="S3 key for input CSV (e.g., 02_engineered/prepared_diabetes_test_selected.csv)")
     ap.add_argument("--label-col", default=cfg.get("data.label_col"), help="Name of ground-truth label column in input")
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    ap.add_argument("--out-key", default=None,
+                    help="write the labeled output here instead of the standard "
+                         "<input>_with_predictions.csv (for trial runs)")
     args = ap.parse_args()
 
     if RUN_MODE not in {"both", "xgb", "nn"}:
@@ -244,7 +251,18 @@ def main():
     feature_sources = {}
 
     # 2) XGB branch
-    if RUN_MODE in {"both", "xgb"}:
+    if RUN_MODE in {"both", "xgb"} and XGB_SOURCE == "local_folds":
+        # Imported here so NN-only runs don't need xgboost installed
+        from src.xgb_fold_ensemble import clients, fold_jobs, load_folds, predict_folds
+        fsm, fs3 = clients()
+        jobs = fold_jobs(fs3)
+        print(f"🧮 XGB source: local average of {len(jobs)} fold models (no endpoint)")
+        folds = load_folds(fsm, fs3, jobs)
+        results["xgb_prob"] = predict_folds(folds, df).mean(axis=1).tolist()
+        feature_sources["xgb"] = "per-fold lists: " + ", ".join(jobs)
+    elif RUN_MODE in {"both", "xgb"}:
+        if XGB_SOURCE != "endpoint":
+            raise SystemExit(f"❌ predict.xgb_source must be local_folds|endpoint (got {XGB_SOURCE})")
         if not _maybe_inservice(ENDPOINT_XGB):
             raise SystemExit(f"❌ XGB endpoint {ENDPOINT_XGB} is not InService.")
         xgb_cols, xgb_src = _resolve_features(ENDPOINT_XGB, XGB_FEATURES_KEY)
@@ -305,7 +323,7 @@ def main():
 
         base = os.path.basename(args.input_key)
         base_no_ext = base[:-4] if base.lower().endswith(".csv") else base
-        out_key = f"{OUTPUT_PREFIX}/{base_no_ext}_with_predictions.csv"
+        out_key = args.out_key or f"{OUTPUT_PREFIX}/{base_no_ext}_with_predictions.csv"
         _s3_write_csv(BUCKET, out_key, out_full)
         wrote_with_predictions = True
         print(f"✅ Wrote labeled predictions to s3://{BUCKET}/{out_key}")

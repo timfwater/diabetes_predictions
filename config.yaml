@@ -99,6 +99,13 @@ predict:
   batch_size: 500                      # [BATCH_SIZE]
   run_mode: both                       # [RUN_MODE] "both" | "xgb" | "nn"
 
+  # Where XGBoost predictions come from:
+  #   local_folds : download every CV-fold model of the latest tuning run and
+  #                 score locally, averaging them. No XGB endpoint needed, so
+  #                 full_experiment skips deploy_xgb.
+  #   endpoint    : call the deployed XGB endpoint (single fold; old behaviour).
+  xgb_source: local_folds              # [XGB_SOURCE]
+
 evaluation:
   topk: 10                             # [EVAL_TOPK]
   threshold_min: 0.01

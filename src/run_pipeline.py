@@ -150,6 +150,10 @@ def build_steps() -> dict[str, Step]:
             "--input-key", cfg.s3_key("engineered", "test_selected"),
             "--label-col", str(cfg.get("data.label_col")),
         ],
+        preflight=lambda: [f"xgb_source={cfg.get('predict.xgb_source')} "
+                           + ("(fold average scored locally; no XGB endpoint)"
+                              if str(cfg.get('predict.xgb_source')).lower() == "local_folds"
+                              else "(deployed XGB endpoint)")],
         aws_cost="low",
     ),
     "baseline_lr": Step(
@@ -167,20 +171,29 @@ def build_steps() -> dict[str, Step]:
     }
 
 
-PRESETS: dict[str, list] = {
-    "prepare_selected": ["split", "feature_select", "apply_features"],
-    "prepare_full": ["engineer", "split", "feature_select", "apply_features"],
-    "tune_both": ["tune_xgb", "tune_nn"],
-    "deploy_both": ["deploy_xgb", "deploy_nn"],
-    "score_and_eval": ["predict", "baseline_lr", "evaluate"],
-    # Re-evaluate saved predictions without touching endpoints (free)
-    "eval_only": ["baseline_lr", "evaluate"],
-    "full_experiment": [
-        "engineer", "split", "feature_select", "apply_features",
-        "tune_xgb", "tune_nn", "deploy_xgb", "deploy_nn",
-        "predict", "baseline_lr", "evaluate",
-    ],
-}
+def build_presets() -> dict[str, list]:
+    """
+    Built after --set overrides, like the steps. With
+    predict.xgb_source=local_folds the XGB predictions come from the fold
+    models scored locally, so standing up an XGB endpoint would be pure cost
+    and deploy_xgb is left out of the runs that would otherwise include it.
+    """
+    local_xgb = str(cfg.get("predict.xgb_source")).lower() == "local_folds"
+    deploy = ["deploy_nn"] if local_xgb else ["deploy_xgb", "deploy_nn"]
+    return {
+        "prepare_selected": ["split", "feature_select", "apply_features"],
+        "prepare_full": ["engineer", "split", "feature_select", "apply_features"],
+        "tune_both": ["tune_xgb", "tune_nn"],
+        "deploy_both": deploy,
+        "score_and_eval": ["predict", "baseline_lr", "evaluate"],
+        # Re-evaluate saved predictions without touching endpoints (free)
+        "eval_only": ["baseline_lr", "evaluate"],
+        "full_experiment": [
+            "engineer", "split", "feature_select", "apply_features",
+            "tune_xgb", "tune_nn", *deploy,
+            "predict", "baseline_lr", "evaluate",
+        ],
+    }
 
 
 # ------------------------------------------------------------------ helpers
@@ -260,6 +273,7 @@ def _eval_args(step: Step) -> list:
 
 
 def _resolve_steps(args, steps: dict) -> list:
+    PRESETS = build_presets()
     if args.preset:
         if args.preset not in PRESETS:
             raise SystemExit(
@@ -276,6 +290,7 @@ def _resolve_steps(args, steps: dict) -> list:
 
 
 def _print_listing(steps: dict) -> None:
+    PRESETS = build_presets()
     print("\nAVAILABLE STEPS")
     print("-" * 72)
     for step in steps.values():
