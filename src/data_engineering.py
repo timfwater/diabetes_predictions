@@ -17,10 +17,12 @@ raw_subfolder = cfg.prefix("raw")
 input_file = cfg.get("storage.input_file")
 
 # --- Output file names ---
+# Only the full dataset is written here. The train/test split is the job of
+# split_train_test.py (grouped by patient). This script used to also write a
+# positional 80/20 split under the same train/test keys, which briefly put
+# leaky files in S3 until the split step overwrote them.
 output_files = {
     "full":  cfg.get("data.files.full"),
-    "train": cfg.get("data.files.train"),
-    "test":  cfg.get("data.files.test"),
 }
 
 s3_client = boto3.client("s3")
@@ -182,17 +184,15 @@ diabetes = Replace_With_Dummies(diabetes, dummy_vars)
 for col in diabetes.columns:
     diabetes[col] = diabetes[col].astype(int)
 
-# Shuffle and split
+# Shuffle. KEEP this even though the split no longer happens here: the grouped
+# split in split_train_test.py depends on row order, so removing the shuffle
+# would silently change which patients land in the test set and break
+# comparability with every saved result.
 diabetes = shuffle(diabetes, random_state=42).reset_index(drop=True)
-split_idx = int(len(diabetes) * 0.8)
-train = diabetes.iloc[:split_idx]
-test = diabetes.iloc[split_idx:]
 
-# Upload datasets
+# Upload
 upload_df_to_s3(diabetes, output_files["full"])
-upload_df_to_s3(train,    output_files["train"])
-upload_df_to_s3(test,     output_files["test"])
 
-print("\n✅ All exports complete:")
-for label in ["full", "train", "test"]:
-    print(f" • {label.capitalize()}: {output_files[label]} ({prefix}/{output_files[label]})")
+print("\n✅ Export complete:")
+print(f" • Full: {output_files['full']} ({prefix}/{output_files['full']})")
+print(" • Train/test are written by the split step (split_train_test.py).")
