@@ -106,6 +106,13 @@ predict:
   #   endpoint    : call the deployed XGB endpoint (single fold; old behaviour).
   xgb_source: local_folds              # [XGB_SOURCE]
 
+  # Where NN predictions come from (same semantics as xgb_source above):
+  #   local_folds : download every CV-fold model of the latest NN tuning run
+  #                 and score locally, averaging them. No NN endpoint needed,
+  #                 so full_experiment skips deploy_nn too.
+  #   endpoint    : call the deployed NN endpoint (single fold; old behaviour).
+  nn_source: local_folds               # [NN_SOURCE]
+
 evaluation:
   topk: 10                             # [EVAL_TOPK]
   threshold_min: 0.01

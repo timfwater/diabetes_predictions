@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1.7
+#
+# SageMaker Processing image: batch-scores with the neural-network fold-average
+# ensemble (predict_from_both.py, RUN_MODE=nn, predict.nn_source=local_folds).
+# No live endpoint. Build/push to the existing ECR repo under its own tag,
+# e.g.:
+#   docker build -f Dockerfile.nn-scorer -t diabetes:nn-scorer .
+#   docker tag diabetes:nn-scorer <account>.dkr.ecr.<region>.amazonaws.com/diabetes:nn-scorer
+#   docker push <account>.dkr.ecr.<region>.amazonaws.com/diabetes:nn-scorer
+
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/ml/code
+
+COPY requirements-nn-scorer.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Only what predict_from_both.py's nn-local_folds path touches.
+COPY src/__init__.py          src/__init__.py
+COPY src/config.py            src/config.py
+COPY src/nn_fold_ensemble.py  src/nn_fold_ensemble.py
+COPY src/predict_from_both.py src/predict_from_both.py
+COPY config.yaml               config.yaml
+
+# SageMaker Processing appends the job's `arguments` after the entrypoint,
+# e.g. ["--input-key", "02_engineered/prepared_diabetes_test_selected.csv",
+#       "--label-col", "readmitted"].
+ENTRYPOINT ["python3", "-m", "src.predict_from_both"]

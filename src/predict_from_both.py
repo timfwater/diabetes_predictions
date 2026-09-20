@@ -34,6 +34,10 @@ RUN_MODE = str(cfg.get("predict.run_mode")).lower().strip()
 # scored on this machine, no endpoint) or endpoint (single deployed fold).
 XGB_SOURCE = str(cfg.get("predict.xgb_source") or "endpoint").lower().strip()
 
+# Where NN predictions come from: local_folds (average of every CV-fold model,
+# scored on this machine, no endpoint) or endpoint (single deployed fold).
+NN_SOURCE = str(cfg.get("predict.nn_source") or "endpoint").lower().strip()
+
 # Optional explicit S3 keys for feature lists (bucket is BUCKET). No config
 # entry - these are one-off overrides for scoring against a non-default
 # serving schema.
@@ -282,7 +286,18 @@ def main():
             results["xgb_prob"] = probs
 
     # 3) NN branch
-    if RUN_MODE in {"both", "nn"}:
+    if RUN_MODE in {"both", "nn"} and NN_SOURCE == "local_folds":
+        # Imported here so XGB-only runs don't need tensorflow installed
+        from src.nn_fold_ensemble import clients, fold_jobs, load_folds, predict_folds
+        fsm, fs3 = clients()
+        jobs = fold_jobs(fs3)
+        print(f"🧮 NN source: local average of {len(jobs)} fold models (no endpoint)")
+        folds = load_folds(fsm, fs3, jobs)
+        results["nn_prob"] = predict_folds(folds, df).mean(axis=1).tolist()
+        feature_sources["nn"] = "per-fold lists: " + ", ".join(jobs)
+    elif RUN_MODE in {"both", "nn"}:
+        if NN_SOURCE != "endpoint":
+            raise SystemExit(f"❌ predict.nn_source must be local_folds|endpoint (got {NN_SOURCE})")
         if not _maybe_inservice(ENDPOINT_NN):
             raise SystemExit(f"❌ NN endpoint {ENDPOINT_NN} is not InService.")
         nn_cols, nn_src = _resolve_features(ENDPOINT_NN, NN_FEATURES_KEY)

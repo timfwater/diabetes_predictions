@@ -55,6 +55,11 @@ OBJECTIVE_METRIC = cfg.get("tuning.objective_metric")
 # silently invalidates comparisons against saved runs.
 FOLD_SEED = 42
 
+# Persist the exact feature list used for this run (mirrors run_tuning_xgb.py)
+FEATURES_USED_LATEST_KEY = f"{prefix}/features_used_latest_nn.txt"
+FEATURES_BY_TUNING_DIR   = f"{prefix}/feature_lists/by_tuning_job_nn"
+NN_RUN_POINTER_KEY       = f"{prefix}/tuning_runs/nn_latest.json"
+
 s3 = boto3.client("s3", region_name=AWS_REGION)
 def s3_put_text(bucket: str, key: str, text: str):
     s3.put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
@@ -73,6 +78,15 @@ if feature_cols is None and feat_df.shape[1] == 1:
     feature_cols = feat_df.iloc[:, 0].dropna().astype(str).tolist()
 if not feature_cols:
     raise ValueError("❌ No selected features found in features file.")
+
+# --- Persist the exact feature list used for this run ---
+ts = pd.Timestamp.utcnow().strftime("%Y%m%d%H%M%S")
+features_versioned_key = f"{prefix}/features_used_{ts}_nn.txt"
+features_text = "\n".join(feature_cols)
+s3_put_text(bucket, features_versioned_key, features_text)
+s3_put_text(bucket, FEATURES_USED_LATEST_KEY, features_text)
+print(f"📎 Saved features list: s3://{bucket}/{features_versioned_key}")
+print(f"📌 Updated pointer:     s3://{bucket}/{FEATURES_USED_LATEST_KEY}")
 print(f"📌 Selected {len(feature_cols)} features (first 5): {feature_cols[:5]}")
 
 # ========= Load and filter data =========
@@ -204,5 +218,25 @@ for i, (train_s3, val_s3) in enumerate(folds, start=1):
     started_jobs.append(job_name)
     print(f"✅ Started NN tuning job (fold {i}): {job_name}")
 
+    # Save a job-scoped copy of the exact features used for THIS run
+    job_scoped_key = f"{FEATURES_BY_TUNING_DIR}/{job_name}.txt"
+    s3_put_text(bucket, job_scoped_key, features_text)
+
 print("🧾 NN tuning jobs this run:", json.dumps(started_jobs, indent=2))
 print("✅ Launched NN HPO.")
+
+# ========= Record ALL fold jobs of this run, in fold order =========
+# Mirrors run_tuning_xgb.py's xgb_latest.json pointer. Scoring with the NN
+# fold average needs every one of these job names, not just the last fold.
+# Stored in S3 so it survives container restarts and Fargate runs.
+if started_jobs:
+    run_record = {
+        "jobs": started_jobs,
+        "kfolds": KFOLDS,
+        "created_utc": pd.Timestamp.utcnow().isoformat(),
+        "features_key": features_versioned_key,
+    }
+    s3_put_text(bucket, NN_RUN_POINTER_KEY, json.dumps(run_record, indent=2))
+    print(f"📌 Fold-run pointer: s3://{bucket}/{NN_RUN_POINTER_KEY}")
+else:
+    print("⚠️ No tuning jobs were started.")

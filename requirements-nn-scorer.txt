@@ -1,0 +1,24 @@
+# Dependencies for the neural-network batch-scoring SageMaker Processing job
+# (predict_from_both.py with RUN_MODE=nn, predict.nn_source=local_folds).
+# tensorflow is pinned to match tuning.nn.framework_version (2.13) /
+# py_version (py310) in config.yaml, since nn_fold_ensemble.py loads each
+# fold's SavedModel with tf.keras.models.load_model - a mismatched TF minor
+# version is the most likely source of a silent load/serving discrepancy.
+# No xgboost, no sagemaker SDK, no plotting libs in this image.
+
+# === AWS ===
+boto3==1.34.162
+botocore==1.34.162
+
+# === Data / ML ===
+pandas==2.2.2
+# Capped by tensorflow 2.13.1's own requirement (numpy<=1.24.3,>=1.22);
+# 1.26.4 (used elsewhere in this repo) conflicts with it.
+numpy==1.24.3
+scikit-learn==1.4.2
+tensorflow==2.13.1
+pyyaml==6.0.1
+
+# === S3 filesystem (for pandas "s3://...") ===
+s3fs==2024.2.0
+fsspec==2024.2.0

@@ -1,0 +1,20 @@
+# Dependencies for the XGBoost batch-scoring SageMaker Processing job
+# (predict_from_both.py with RUN_MODE=xgb, predict.xgb_source=local_folds).
+# Deliberately narrower than the project-wide requirements.txt: no
+# tensorflow, no sagemaker SDK, no plotting libs - this image only loads
+# XGBoost fold models from S3 and scores a CSV.
+
+# === AWS ===
+boto3==1.34.162
+botocore==1.34.162
+
+# === Data / ML ===
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+xgboost==2.0.3
+pyyaml==6.0.1
+
+# === S3 filesystem (for pandas "s3://...") ===
+s3fs==2024.2.0
+fsspec==2024.2.0
